@@ -1,0 +1,6 @@
+{
+  "id": "runtime-control",
+  "name": "Runtime Control",
+  "description": "Free agent memory without losing the conversation. Stop idle processes now or schedule a stop after work finishes.",
+  "requirements": { "paseo": ">=0.11.2 <0.12.0" }
+}

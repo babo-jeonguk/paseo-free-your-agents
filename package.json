@@ -1,0 +1,50 @@
+{
+  "name": "paseo-runtime-control",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Free agent memory without losing the conversation",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/babo-jeonguk/paseo-runtime-control.git"
+  },
+  "homepage": "https://github.com/babo-jeonguk/paseo-runtime-control#readme",
+  "bugs": {
+    "url": "https://github.com/babo-jeonguk/paseo-runtime-control/issues"
+  },
+  "files": [
+    "paseo-plugin.json",
+    "index.client.tsx",
+    "index.server.ts",
+    "client",
+    "server",
+    "shared",
+    "OVERVIEW.md",
+    "THIRD_PARTY_NOTICES.md",
+    "scripts/build-runtime.mjs",
+    "!**/*.test.ts"
+  ],
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test server/*.test.ts client/*.test.ts",
+    "check": "npm run check:assets && npm run typecheck && npm test",
+    "build:runtime": "node scripts/build-runtime.mjs",
+    "check:assets": "node scripts/build-runtime.mjs --check",
+    "prepack": "npm run build:runtime && npm run check"
+  },
+  "devDependencies": {
+    "@getpaseo/client": "0.11.2",
+    "@getpaseo/plugin": "0.11.2",
+    "@getpaseo/protocol": "0.11.2",
+    "@tanstack/react-query": "^5.90.11",
+    "@types/node": "^22.20.4",
+    "@types/react": "~19.2.0",
+    "esbuild": "0.28.2",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.3",
+    "zod": "^4.4.3"
+  }
+}

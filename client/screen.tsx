@@ -1,0 +1,874 @@
+import type { PluginScreenProps } from "@getpaseo/plugin/client";
+import { useRpc } from "@getpaseo/plugin/client";
+import { Icon, Modal, ScrollView, TextInput } from "@getpaseo/plugin/client/react-native";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useReducer } from "react";
+import { ActivityIndicator, Platform, Pressable, Text, View } from "react-native";
+import type { Row } from "../shared/model";
+import { HoursSchema } from "../shared/model";
+import { changeStopRpc, listRpc, setupStatusRpc, setupChangeRpc } from "../shared/rpc";
+import {
+  controlNote,
+  filters,
+  matches,
+  pendingStop,
+  memoryLabel,
+  providerLabel,
+  statusLabel,
+  visible,
+  type Filter,
+} from "./filter";
+
+type Theme = PluginScreenProps["theme"];
+type Dialog = { kind: "menu" | "schedule" | "stop"; row: Row } | null;
+interface ViewState {
+  query: string;
+  selected: Filter[];
+  dialog: Dialog;
+  hours: string;
+  error: string | null;
+  notice: string | null;
+  now: number;
+}
+type Action =
+  | { type: "query"; value: string }
+  | { type: "filter"; value: Filter | "all" }
+  | { type: "dialog"; value: Dialog }
+  | { type: "hours"; value: string }
+  | { type: "error"; value: string | null }
+  | { type: "success"; value: string }
+  | { type: "clock"; value: number };
+function reducer(state: ViewState, action: Action): ViewState {
+  switch (action.type) {
+    case "query":
+      return { ...state, query: action.value };
+    case "filter": {
+      const value = action.value;
+      if (value === "all") return { ...state, selected: [] };
+      const selected = state.selected.includes(value)
+        ? state.selected.filter((id) => id !== value)
+        : [...state.selected, value];
+      return { ...state, selected };
+    }
+    case "dialog":
+      return { ...state, dialog: action.value, hours: "1", error: null };
+    case "hours":
+      return { ...state, hours: action.value, error: null };
+    case "error":
+      return { ...state, error: action.value };
+    case "success":
+      return { ...state, dialog: null, error: null, notice: action.value };
+    case "clock":
+      return { ...state, now: action.value };
+  }
+}
+
+function createStyles(theme: Theme, compact: boolean) {
+  const c = theme.colors;
+  return {
+    scroll: { flex: 1, backgroundColor: c.surface0 },
+    content: {
+      padding: compact ? 16 : 28,
+      paddingBottom: 48,
+      gap: 20,
+      width: "100%" as const,
+      maxWidth: 1440,
+      alignSelf: "center" as const,
+    },
+    title: { fontSize: 25, fontWeight: "600" as const, color: c.foreground },
+    muted: { fontSize: 13, color: c.foregroundMuted, lineHeight: 20 },
+    text: { fontSize: 14, color: c.foreground, lineHeight: 20 },
+    strong: { fontSize: 14, color: c.foreground, fontWeight: "600" as const },
+    line: { flexDirection: "row" as const, alignItems: "center" as const, gap: 10 },
+    header: {
+      flexDirection: "row" as const,
+      alignItems: "center" as const,
+      justifyContent: "space-between" as const,
+      gap: 12,
+    },
+    summary: { flexDirection: "row" as const, flexWrap: "wrap" as const, gap: 10 },
+    metric: {
+      flexGrow: 1,
+      flexBasis: compact ? ("45%" as const) : ("20%" as const),
+      padding: 16,
+      gap: 6,
+      borderRadius: 9,
+      borderColor: c.border,
+      borderWidth: 1,
+      backgroundColor: c.surface1,
+    },
+    number: {
+      fontSize: 24,
+      fontWeight: "600" as const,
+      color: c.foreground,
+      fontVariant: ["tabular-nums" as const],
+    },
+    toolbar: {
+      flexDirection: compact ? ("column" as const) : ("row" as const),
+      gap: 12,
+      alignItems: compact ? ("stretch" as const) : ("center" as const),
+      flexWrap: "wrap" as const,
+    },
+    search: {
+      minHeight: 44,
+      minWidth: 180,
+      flexGrow: 1,
+      flexShrink: 1,
+      paddingHorizontal: 12,
+      borderWidth: 1,
+      borderColor: c.border,
+      borderRadius: 7,
+      color: c.foreground,
+      backgroundColor: c.surface1,
+      fontSize: 14,
+    },
+    segments: {
+      flexDirection: "row" as const,
+      flexWrap: "wrap" as const,
+      gap: 4,
+      padding: 4,
+      borderRadius: 8,
+      backgroundColor: c.surface2,
+    },
+    filter: {
+      minHeight: 44,
+      flexBasis: compact ? ("47%" as const) : ("auto" as const),
+      flexGrow: compact ? 1 : 0,
+      justifyContent: "center" as const,
+      alignItems: "center" as const,
+      paddingHorizontal: 10,
+      paddingVertical: 6,
+      borderRadius: 5,
+      borderWidth: 1,
+      borderColor: "transparent",
+    },
+    selected: { backgroundColor: c.surface1, borderColor: c.border },
+    panel: {
+      borderWidth: 1,
+      borderColor: c.border,
+      borderRadius: 9,
+      backgroundColor: c.surface1,
+      overflow: "hidden" as const,
+    },
+    tableHeader: {
+      flexDirection: "row" as const,
+      paddingHorizontal: 16,
+      paddingVertical: 12,
+      gap: 14,
+      backgroundColor: c.surface2,
+    },
+    row: {
+      flexDirection: compact ? ("column" as const) : ("row" as const),
+      alignItems: compact ? ("stretch" as const) : ("center" as const),
+      padding: 16,
+      gap: compact ? 12 : 14,
+      borderTopWidth: 1,
+      borderColor: c.border,
+    },
+    session: { flex: compact ? undefined : 3, minWidth: 0, gap: 4 },
+    agent: { flex: compact ? undefined : 1, minWidth: 0 },
+    status: { flex: compact ? undefined : 1.6, minWidth: 0 },
+    memory: { flex: compact ? undefined : 1, minWidth: 0 },
+    control: {
+      flex: compact ? undefined : 2.3,
+      minWidth: 0,
+      flexDirection: "row" as const,
+      alignItems: "center" as const,
+      gap: 8,
+    },
+    iconButton: {
+      width: 44,
+      height: 44,
+      borderRadius: 6,
+      alignItems: "center" as const,
+      justifyContent: "center" as const,
+    },
+    pressed: { backgroundColor: c.surface2 },
+    disabled: { opacity: 0.45 },
+    button: {
+      minHeight: 44,
+      paddingHorizontal: 14,
+      paddingVertical: 10,
+      borderRadius: 6,
+      borderColor: c.border,
+      borderWidth: 1,
+      justifyContent: "center" as const,
+      alignItems: "center" as const,
+    },
+    primary: { backgroundColor: c.foreground },
+    primaryText: { color: c.surface0, fontSize: 14, fontWeight: "600" as const },
+    danger: { color: c.statusDanger, fontSize: 14, lineHeight: 20 },
+    banner: {
+      padding: 14,
+      borderWidth: 1,
+      borderColor: c.border,
+      borderRadius: 7,
+      gap: 8,
+      backgroundColor: c.surface1,
+    },
+    empty: { padding: 40, alignItems: "center" as const, gap: 10 },
+    actions: { gap: 8 },
+    footer: {
+      flexDirection: "row" as const,
+      justifyContent: "flex-end" as const,
+      gap: 8,
+      flexWrap: "wrap" as const,
+    },
+  };
+}
+type Styles = ReturnType<typeof createStyles>;
+
+function ControlButton({
+  label,
+  onPress,
+  styles,
+  disabled = false,
+  primary = false,
+}: {
+  label: string;
+  onPress(): void;
+  styles: Styles;
+  disabled?: boolean;
+  primary?: boolean;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ disabled }}
+      disabled={disabled}
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.button,
+        primary && styles.primary,
+        pressed && !primary && styles.pressed,
+        disabled && styles.disabled,
+      ]}
+    >
+      <Text style={primary ? styles.primaryText : styles.text}>{label}</Text>
+    </Pressable>
+  );
+}
+function stopLabel(row: Row, now: number): string {
+  if (!row.stop) return "No stop scheduled";
+  if (row.stop.state === "deferred") return "Waiting for work to finish";
+  if (row.stop.state === "stopping") return "Stopping process…";
+  if (row.stop.state === "failed") return "Stop failed";
+  const remaining = Math.max(0, Math.ceil((row.stop.dueAt - now) / 60_000));
+  if (remaining === 0) return "Stop due";
+  if (remaining < 60) return `Stop in ${remaining} min`;
+  return `Stop in ${Math.ceil(remaining / 60)} hours`;
+}
+function ConversationRow({
+  row,
+  compact,
+  styles,
+  theme,
+  now,
+  open,
+  menu,
+}: {
+  row: Row;
+  compact: boolean;
+  styles: Styles;
+  theme: Theme;
+  now: number;
+  open?: (id: string) => void;
+  menu(): void;
+}) {
+  const runtime = row.runtime;
+  return (
+    <View style={styles.row} testID={`conversation-${runtime.agentId}`}>
+      <View style={styles.session}>
+        <View style={styles.line}>
+          <Text style={[styles.strong, { flexShrink: 1 }]}>{runtime.title}</Text>
+          {open && (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Open conversation: ${runtime.title}`}
+              onPress={() => open(runtime.agentId)}
+              style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
+            >
+              <Icon name="ArrowUpRight" size={16} color={theme.colors.foregroundMuted} />
+            </Pressable>
+          )}
+        </View>
+        <Text style={styles.muted}>
+          {runtime.workspace || "Workspace unavailable"} · {row.ownerCount}{" "}
+          {row.ownerCount === 1 ? "window" : "windows"}
+        </Text>
+        {row.syncPending && <Text style={styles.muted}>Sync pending</Text>}
+        {row.hasSharedTabs && <Text style={styles.muted}>Includes shared subagent tabs</Text>}
+      </View>
+      <View style={styles.agent}>
+        {compact && <Text style={styles.muted}>Agent</Text>}
+        <Text style={styles.text}>{providerLabel(runtime.provider)}</Text>
+      </View>
+      <View style={styles.status}>
+        {compact && <Text style={styles.muted}>Status</Text>}
+        <Text style={styles.text}>{statusLabel(row)}</Text>
+        {controlNote(row) && <Text style={styles.muted}>{controlNote(row)}</Text>}
+      </View>
+      <View style={styles.memory}>
+        {compact && <Text style={styles.muted}>Memory</Text>}
+        <Text style={styles.text}>{memoryLabel(runtime.memoryBytes)}</Text>
+      </View>
+      <View style={styles.control}>
+        <View style={{ flex: 1, gap: 4 }}>
+          {compact && <Text style={styles.muted}>Process control</Text>}
+          <Text style={styles.text}>{stopLabel(row, now)}</Text>
+          {row.stop && (
+            <Text style={styles.muted}>{new Date(row.stop.dueAt).toLocaleString()}</Text>
+          )}
+          {row.stop?.error && <Text style={styles.danger}>{row.stop.error}</Text>}
+          {runtime.unavailableReason && runtime.presence !== "absent" && (
+            <Text style={styles.muted}>{runtime.unavailableReason}</Text>
+          )}
+        </View>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Process controls: ${runtime.title}`}
+          onPress={menu}
+          style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
+        >
+          <Icon name="Ellipsis" size={18} color={theme.colors.foregroundMuted} />
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+export function RuntimeScreen({
+  theme,
+  host,
+  layout,
+  navigation,
+  tabsSupported,
+}: PluginScreenProps & { tabsSupported: boolean }) {
+  const styles = useMemo(() => createStyles(theme, layout.compact), [theme, layout.compact]);
+  const [view, dispatch] = useReducer(reducer, {
+    query: "",
+    selected: [],
+    dialog: null,
+    hours: "1",
+    error: null,
+    notice: null,
+    now: Date.now(),
+  });
+  const list = useRpc(listRpc);
+  const change = useRpc(changeStopRpc);
+  const setupStatus = useRpc(setupStatusRpc),
+    setupChange = useRpc(setupChangeRpc);
+  const queryClient = useQueryClient();
+  const queryKey = useMemo(() => ["runtime-control", "inventory", host.id], [host.id]);
+  const query = useQuery({ queryKey, queryFn: () => list({}), refetchInterval: 5_000, retry: 1 });
+  const setupKey = ["runtime-control", "setup", host.id];
+  const setup = useQuery({
+    queryKey: setupKey,
+    queryFn: () => setupStatus({}),
+    refetchInterval: 15000,
+    retry: 1,
+  });
+  const setupMutation = useMutation({
+    mutationFn: async (input: Parameters<typeof setupChange>[0]) => {
+      const result = await setupChange(input);
+      queryClient.setQueryData(setupKey, result);
+      const state = result.providers.find((row) => row.provider === input.provider)?.state;
+      if (
+        state !== (input.action === "enable" ? "installed" : "restored") &&
+        state !== "not-installed"
+      )
+        throw new Error(
+          "The command settings need reconciliation. Your existing work has been kept.",
+        );
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey });
+    },
+  });
+  useEffect(() => {
+    const timer = setInterval(() => dispatch({ type: "clock", value: Date.now() }), 15_000);
+    return () => clearInterval(timer);
+  }, []);
+  const mutation = useMutation({
+    mutationFn: async (input: Parameters<typeof change>[0]) => {
+      const result = await change(input);
+      if (!result.changed) throw new Error(result.reason ?? "Could not update the stop policy.");
+      return input.action;
+    },
+    onSuccess: async (action) => {
+      await queryClient.invalidateQueries({ queryKey });
+      let notice = "Stop requested. Active work is protected.";
+      if (action === "schedule")
+        notice = "Stop scheduled. Your conversation and tab stay available.";
+      if (action === "cancel") notice = "Scheduled stop cancelled.";
+      dispatch({ type: "success", value: notice });
+    },
+    onError: (error) =>
+      dispatch({ type: "error", value: error instanceof Error ? error.message : String(error) }),
+  });
+  const rows = query.data?.rows ?? [];
+  const shown = visible(rows, view.selected, view.query);
+  const processCount = rows.filter((row) => row.runtime.presence === "running").length;
+  const memory = rows.reduce((total, row) => total + (row.runtime.memoryBytes ?? 0), 0);
+  const memoryKnown = rows.every((row) => row.runtime.memoryBytes !== null);
+  const scheduled = rows.filter(pendingStop).length;
+  const metrics = [
+    { label: "Process memory", value: memoryKnown ? memoryLabel(memory) : "Unavailable" },
+    {
+      label: "Processes",
+      value: rows.some((row) => row.runtime.presence === "unknown")
+        ? "Unavailable"
+        : String(processCount),
+    },
+    { label: "Pending stops", value: String(scheduled) },
+    { label: "Open conversations", value: String(rows.length) },
+  ];
+  const dialog = view.dialog;
+  const currentRow = dialog
+    ? rows.find((row) => row.runtime.agentId === dialog.row.runtime.agentId)
+    : null;
+  const canStop =
+    currentRow?.stop?.state !== "stopping" &&
+    query.data?.supported === true &&
+    currentRow?.runtime.releasable === true &&
+    currentRow.runtime.presence === "running";
+  const validHours = HoursSchema.safeParse(Number(view.hours));
+  function submit(action: "now" | "schedule" | "cancel") {
+    if (!dialog) return;
+    if (action === "schedule" && !validHours.success) {
+      dispatch({ type: "error", value: "Enter a duration from 0.25 to 168 hours." });
+      return;
+    }
+    const row = dialog.row;
+    mutation.mutate({
+      agentId: row.runtime.agentId,
+      expectedGeneration: row.runtime.generation,
+      expectedStopId: row.stop?.id ?? null,
+      action,
+      ...(action === "schedule" && validHours.success ? { hours: validHours.data } : {}),
+    });
+  }
+  function close() {
+    if (!mutation.isPending) dispatch({ type: "dialog", value: null });
+  }
+  const open = navigation
+    ? (agentId: string) => {
+        // TODO: When Paseo supports detaching a single conversation into a popup,
+        // use it to open a conversation preview.
+        navigation.openAgent({ agentId });
+      }
+    : undefined;
+  function moveFilter(event: {
+    key: string;
+    preventDefault(): void;
+    currentTarget: {
+      parentElement: { querySelectorAll(selector: string): NodeListOf<HTMLElement> } | null;
+    };
+  }) {
+    if (Platform.OS !== "web") return;
+    const keys = ["ArrowLeft", "ArrowRight", "Home", "End"];
+    if (!keys.includes(event.key)) return;
+    const buttons = Array.from(
+      event.currentTarget.parentElement?.querySelectorAll("[role=button]") ?? [],
+    );
+    const index = buttons.findIndex((button) => button === event.currentTarget);
+    let next = index;
+    if (event.key === "ArrowRight") next = (index + 1) % buttons.length;
+    if (event.key === "ArrowLeft") next = (index + buttons.length - 1) % buttons.length;
+    if (event.key === "Home") next = 0;
+    if (event.key === "End") next = buttons.length - 1;
+    event.preventDefault();
+    buttons[next]?.focus();
+  }
+  return (
+    <>
+      <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
+        <View style={styles.header}>
+          <View style={{ gap: 5, flex: 1 }}>
+            <Text accessibilityRole="header" style={styles.title}>
+              Runtime Control
+            </Text>
+            <Text style={styles.muted}>Free agent memory without losing the conversation.</Text>
+          </View>
+          <ControlButton
+            label={query.isFetching ? "Refreshing…" : "Refresh"}
+            styles={styles}
+            disabled={query.isFetching}
+            onPress={() => void query.refetch()}
+          />
+        </View>
+        {query.isPending && (
+          <ActivityIndicator
+            color={theme.colors.foregroundMuted}
+            accessibilityLabel="Loading open conversations"
+          />
+        )}
+        {query.isError && (
+          <View style={styles.banner} accessibilityRole="alert">
+            <Text style={styles.strong}>Couldn’t load runtime status</Text>
+            <Text style={styles.danger}>{query.error.message}</Text>
+            <ControlButton label="Try again" onPress={() => void query.refetch()} styles={styles} />
+          </View>
+        )}
+        {(!tabsSupported || (query.data && !query.data.supported)) && (
+          <View style={styles.banner}>
+            <Text style={styles.strong}>Compatibility unavailable</Text>
+            {!tabsSupported && (
+              <Text style={styles.muted}>
+                This Paseo app cannot report its open tabs. This window’s last confirmed tabs are
+                kept until synchronization can resume.
+              </Text>
+            )}
+            {query.data && !query.data.supported && (
+              <Text style={styles.muted}>{query.data.reason}</Text>
+            )}
+          </View>
+        )}
+        {!setup.data?.official && (
+          <View style={styles.banner}>
+            <Text style={styles.strong}>Process controls</Text>
+            <Text style={styles.muted}>
+              Enable controls for new conversations. Existing conversations apply after the next
+              Paseo daemon restart. Your current work will keep running.
+            </Text>
+            {setup.isPending && (
+              <ActivityIndicator accessibilityLabel="Loading process control setup" />
+            )}
+            {(setup.isError || setupMutation.isError) && (
+              <Text accessibilityRole="alert" style={styles.danger}>
+                {setupMutation.error?.message ?? setup.error?.message}
+              </Text>
+            )}
+            {setup.data && !setup.data.supported && (
+              <Text style={styles.muted}>Process controls currently require Linux.</Text>
+            )}
+            {setup.data?.providers.map((provider) => {
+              const enabled = provider.state === "installed",
+                changed = provider.state === "changed";
+              const name = provider.provider === "codex" ? "Codex" : "Claude";
+              return (
+                <View key={provider.provider} style={[styles.line, { flexWrap: "wrap" }]}>
+                  <Text style={styles.strong}>{name}</Text>
+                  <Text style={[styles.muted, { flex: 1 }]}>
+                    {changed
+                      ? "Command changed elsewhere; your setting is preserved."
+                      : enabled
+                      ? "Enabled for new conversations"
+                      : provider.state === "pending"
+                      ? "Setup needs reconciliation"
+                      : "Not enabled"}
+                  </Text>
+                  {!changed && (
+                    <ControlButton
+                      label={enabled ? `Restore ${name} command` : `Enable ${name}`}
+                      styles={styles}
+                      disabled={setupMutation.isPending}
+                      onPress={() =>
+                        setupMutation.mutate({
+                          provider: provider.provider,
+                          action: enabled ? "restore" : "enable",
+                        })
+                      }
+                    />
+                  )}
+                  {provider.state === "pending" && (
+                    <ControlButton
+                      label={`Restore ${name} command`}
+                      styles={styles}
+                      disabled={setupMutation.isPending}
+                      onPress={() =>
+                        setupMutation.mutate({ provider: provider.provider, action: "restore" })
+                      }
+                    />
+                  )}
+                </View>
+              );
+            })}
+            {setup.data?.providers.some(
+              (provider) => provider.explicitDefaultOnRestore && provider.state === "installed",
+            ) && (
+              <Text style={styles.muted}>
+                Restoring a default leaves an explicit CLI command in Paseo settings.
+              </Text>
+            )}
+            <Text style={styles.muted}>
+              Restore commands here before uninstalling. Conversations and tabs stay available.
+            </Text>
+          </View>
+        )}
+        {view.notice && (
+          <Text accessibilityRole="alert" style={styles.muted}>
+            {view.notice}
+          </Text>
+        )}
+        <View style={styles.summary}>
+          {metrics.map((metric) => (
+            <View key={metric.label} style={styles.metric}>
+              <Text style={styles.muted}>{metric.label}</Text>
+              <Text style={styles.number}>{metric.value}</Text>
+            </View>
+          ))}
+        </View>
+        <Text style={styles.muted}>
+          Memory covers native agent processes: PSS where available, otherwise an RSS estimate.
+          Lightweight CLI bridges remain while conversations are open.
+        </Text>
+        <View style={{ gap: 8 }}>
+          <View style={styles.toolbar}>
+            <TextInput
+              accessibilityLabel="Search conversations and workspaces"
+              placeholder="Search conversations"
+              placeholderTextColor={theme.colors.foregroundMuted}
+              value={view.query}
+              onChangeText={(value) => dispatch({ type: "query", value })}
+              style={styles.search}
+            />
+            <View
+              style={styles.segments}
+              accessibilityLabel="Conversation categories: match any selected category"
+            >
+              {[{ id: "all" as const, label: "All" }, ...filters].map((filter) => {
+                const pressed =
+                  filter.id === "all"
+                    ? view.selected.length === 0
+                    : view.selected.includes(filter.id);
+                const count =
+                  filter.id === "all"
+                    ? rows.length
+                    : rows.filter((row) => matches(row, filter.id as Filter)).length;
+                return (
+                  <Pressable
+                    key={filter.id}
+                    accessibilityRole="button"
+                    aria-pressed={pressed}
+                    accessibilityLabel={filter.label}
+                    accessibilityHint={filter.id === "all"
+                      ? "Clear category selections and keep search."
+                      : filter.description}
+                    onPress={() => dispatch({ type: "filter", value: filter.id })}
+                    {...(Platform.OS === "web" ? { onKeyDown: moveFilter } : {})}
+                    style={[styles.filter, pressed && styles.selected]}
+                  >
+                    <Text style={pressed ? styles.strong : styles.muted}>
+                      {filter.label} · {count}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+          <Text style={styles.muted}>
+            Each conversation belongs to one category. Select any combination. All clears filters.
+          </Text>
+        </View>
+        <View style={styles.header}>
+          <Text style={styles.strong}>
+            {shown.length} {shown.length === 1 ? "conversation" : "conversations"}
+          </Text>
+          <Text style={[styles.muted, { flexShrink: 1 }]}>
+            {view.selected
+              .map((id) => filters.find((filter) => filter.id === id)!.label)
+              .join(" OR ") || "All open conversations"}
+          </Text>
+        </View>
+        <View style={styles.panel}>
+          {!layout.compact && (
+            <View style={styles.tableHeader}>
+              {[
+                { label: "Session", style: styles.session },
+                { label: "Agent", style: styles.agent },
+                { label: "Status", style: styles.status },
+                { label: "Memory", style: styles.memory },
+                { label: "Process control", style: styles.control },
+              ].map((column) => (
+                <Text key={column.label} style={[styles.muted, column.style]}>
+                  {column.label}
+                </Text>
+              ))}
+            </View>
+          )}
+          {shown.map((row) => (
+            <ConversationRow
+              key={row.runtime.agentId}
+              row={row}
+              compact={layout.compact}
+              theme={theme}
+              styles={styles}
+              now={view.now}
+              open={open}
+              menu={() => dispatch({ type: "dialog", value: { kind: "menu", row } })}
+            />
+          ))}
+          {!query.isPending && shown.length === 0 && (
+            <View style={styles.empty}>
+              <Icon name="MemoryStick" size={28} color={theme.colors.foregroundMuted} />
+              <Text style={styles.strong}>
+                {rows.length === 0 ? "No open conversations reported" : "No matching conversations"}
+              </Text>
+              <Text style={styles.muted}>
+                {rows.length === 0
+                  ? "Open a conversation in a connected Paseo window."
+                  : "No open conversations match your search and selected categories."}
+              </Text>
+              {view.query !== "" && (
+                <ControlButton
+                  label="Clear search"
+                  styles={styles}
+                  onPress={() => dispatch({ type: "query", value: "" })}
+                />
+              )}
+            </View>
+          )}
+        </View>
+        <Text style={styles.muted}>
+          Open tabs across this host’s windows and devices. Stopping a process keeps its
+          conversation and tab. Memory is estimated process RSS; shared pages may be counted more
+          than once.
+        </Text>
+      </ScrollView>
+      <Modal
+        open={dialog !== null}
+        title={
+          dialog?.kind === "schedule"
+            ? "Schedule process stop"
+            : dialog?.kind === "stop"
+            ? "Stop process"
+            : "Process control"
+        }
+        onOpenChange={(isOpen) => {
+          if (!isOpen) close();
+        }}
+      >
+        <Modal.Content>
+          {dialog && (
+            <View style={styles.actions}>
+              <Text style={styles.strong}>{dialog.row.runtime.title}</Text>
+              {dialog.kind === "menu" && (
+                <>
+                  <ControlButton
+                    label="Stop process in…"
+                    styles={styles}
+                    disabled={!canStop || mutation.isPending}
+                    onPress={() =>
+                      dispatch({ type: "dialog", value: { ...dialog, kind: "schedule" } })
+                    }
+                  />
+                  <ControlButton
+                    label="Cancel scheduled stop"
+                    styles={styles}
+                    disabled={
+                      !currentRow?.stop ||
+                      currentRow.stop.state === "stopping" ||
+                      currentRow.stop.state === "failed" ||
+                      mutation.isPending
+                    }
+                    onPress={() => submit("cancel")}
+                  />
+                  <ControlButton
+                    label="Stop process now"
+                    styles={styles}
+                    disabled={!canStop || mutation.isPending}
+                    onPress={() => dispatch({ type: "dialog", value: { ...dialog, kind: "stop" } })}
+                  />
+                  {!canStop && (
+                    <Text style={styles.muted}>
+                      {currentRow?.runtime.unavailableReason ??
+                        "This conversation has no process to stop."}
+                    </Text>
+                  )}
+                </>
+              )}
+              {dialog.kind === "schedule" && (
+                <>
+                  <Text style={styles.text}>Stop in hours</Text>
+                  <TextInput
+                    accessibilityLabel="Stop in hours"
+                    value={view.hours}
+                    onChangeText={(value) => dispatch({ type: "hours", value })}
+                    keyboardType="decimal-pad"
+                    selectTextOnFocus
+                    autoFocus
+                    style={styles.search}
+                  />
+                  <View style={[styles.line, { flexWrap: "wrap" }]}>
+                    {[
+                      { label: "30 min", value: "0.5" },
+                      { label: "1 hour", value: "1" },
+                      { label: "2 hours", value: "2" },
+                      { label: "4 hours", value: "4" },
+                      { label: "8 hours", value: "8" },
+                    ].map((preset) => (
+                      <ControlButton
+                        key={preset.value}
+                        label={preset.label}
+                        styles={styles}
+                        onPress={() => dispatch({ type: "hours", value: preset.value })}
+                        disabled={mutation.isPending}
+                      />
+                    ))}
+                  </View>
+                  {validHours.success && (
+                    <Text style={styles.muted}>
+                      Scheduled for{" "}
+                      {new Date(view.now + validHours.data * 3_600_000).toLocaleString()}
+                    </Text>
+                  )}
+                  <Text style={styles.muted}>
+                    If the agent is still working, the stop waits until its work finishes. Your
+                    conversation and tab stay available.
+                  </Text>
+                </>
+              )}
+              {dialog.kind === "stop" && (
+                <Text style={styles.text}>
+                  Only the process will stop. Active foreground and background work will finish
+                  first. Your conversation and tab stay available. Send another message to resume
+                  the agent.
+                </Text>
+              )}
+              {view.error && (
+                <Text style={styles.danger} accessibilityRole="alert">
+                  {view.error}
+                </Text>
+              )}
+              {mutation.isPending && <Text style={styles.muted}>Updating process control…</Text>}
+              <View style={styles.footer}>
+                <ControlButton
+                  label={dialog.kind === "menu" ? "Close" : "Cancel"}
+                  styles={styles}
+                  disabled={mutation.isPending}
+                  onPress={close}
+                />
+                {dialog.kind === "schedule" && (
+                  <ControlButton
+                    label={mutation.isPending ? "Scheduling…" : "Schedule stop"}
+                    styles={styles}
+                    primary
+                    disabled={mutation.isPending || !canStop}
+                    onPress={() => submit("schedule")}
+                  />
+                )}
+                {dialog.kind === "stop" && (
+                  <ControlButton
+                    label={
+                      mutation.isPending
+                        ? "Requesting stop…"
+                        : currentRow?.runtime.activity === "idle"
+                        ? "Stop process"
+                        : "Stop when finished"
+                    }
+                    styles={styles}
+                    primary
+                    disabled={mutation.isPending || !canStop}
+                    onPress={() => submit("now")}
+                  />
+                )}
+              </View>
+            </View>
+          )}
+        </Modal.Content>
+      </Modal>
+    </>
+  );
+}
