@@ -4,7 +4,7 @@ import { createServer, type Socket } from "node:net";
 import { mkdtemp, rm, chmod, stat, readFile, readdir, unlink, symlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
+import { basename, join, dirname } from "node:path";
 import { createProxyRuntime, type ProxyRecord } from "./proxy-runtime";
 import { claimProxyConnection } from "./proxy-launch.mjs";
 import { ownProxyLease } from "./proxy-lease.mjs";
@@ -295,6 +295,15 @@ test(
       provider: "codex",
       purpose: "interactive",
     });
+    const reopened = await adapter.prepareSession({
+      agentId: "a",
+      provider: "codex",
+      purpose: "interactive",
+    });
+    assert.equal(reopened.RUNTIME_PROXY_RECIPE_FILE, recipe.RUNTIME_PROXY_RECIPE_FILE);
+    assert.deepEqual(await readdir(join(directory, "recipes")), [
+      basename(recipe.RUNTIME_PROXY_RECIPE_FILE!),
+    ]);
     const first = await claimProxyConnection(recipe.RUNTIME_PROXY_RECIPE_FILE!);
     const cleanups = [first];
     try {

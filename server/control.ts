@@ -19,7 +19,8 @@ export function createControl(store: StateStore, now: () => number = Date.now) {
   let state: State | null = null;
   let api: RuntimeApi | null = null;
   let tail: Promise<unknown> = Promise.resolve();
-  const confirmedOwners = new Set<string>();
+  // Freshness is in memory: after a restart every owner is stale until it reports.
+  const seen = new Map<string, number>();
 
   function serialize<T>(work: () => Promise<T>): Promise<T> {
     const next = tail.then(work);
@@ -41,8 +42,7 @@ export function createControl(store: StateStore, now: () => number = Date.now) {
       { ownerCount: number; syncPending: boolean; hasSharedTabs: boolean }
     >();
     for (const owner of value.owners) {
-      const stale =
-        !confirmedOwners.has(owner.id) || now() - owner.seenAt > FRESH_MS;
+      const stale = now() - (seen.get(owner.id) ?? -Infinity) > FRESH_MS;
       for (const id of owner.agentIds) {
         const row = rows.get(id) ?? {
           ownerCount: 0,
@@ -185,15 +185,16 @@ export function createControl(store: StateStore, now: () => number = Date.now) {
           sharedAgentIds: previous?.sharedAgentIds ?? [],
           seenAt: previous?.seenAt ?? 0,
         });
-        confirmedOwners.delete(ownerId);
+        seen.delete(ownerId);
         await save(value);
         return epoch;
       });
     },
     publish(report: TabReport) {
       return serialize(async () => {
-        const value = structuredClone(await current());
-        const owner = value.owners.find((entry) => entry.id === report.ownerId);
+        const owner = (await current()).owners.find(
+          (entry) => entry.id === report.ownerId,
+        );
         if (
           !owner ||
           owner.epoch !== report.epoch ||
@@ -205,20 +206,26 @@ export function createControl(store: StateStore, now: () => number = Date.now) {
         const sharedIds = [...new Set(report.sharedAgentIds ?? [])]
           .filter((id) => ids.includes(id))
           .sort();
-        if (
-          report.revision === owner.revision &&
-          (JSON.stringify(ids) !== JSON.stringify(owner.agentIds) ||
-            JSON.stringify(sharedIds) !== JSON.stringify(owner.sharedAgentIds))
-        )
-          return false;
-        owner.revision = report.revision;
-        owner.agentIds = ids;
-        owner.sharedAgentIds = sharedIds;
-        owner.seenAt = now();
+        if (report.revision === owner.revision) {
+          if (
+            JSON.stringify(ids) !== JSON.stringify(owner.agentIds) ||
+            JSON.stringify(sharedIds) !== JSON.stringify(owner.sharedAgentIds)
+          )
+            return false;
+          // A periodic report changes nothing on disk; skip the clone and write.
+          seen.set(owner.id, now());
+          return true;
+        }
+        const value = structuredClone(await current());
+        const next = value.owners.find((entry) => entry.id === owner.id)!;
+        next.revision = report.revision;
+        next.agentIds = ids;
+        next.sharedAgentIds = sharedIds;
+        next.seenAt = now();
         const open = membership(value);
         value.stops = value.stops.filter((stop) => open.has(stop.agentId));
         await save(value);
-        confirmedOwners.add(owner.id);
+        seen.set(owner.id, now());
         return true;
       });
     },

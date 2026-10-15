@@ -6,8 +6,10 @@ import {
   readFile,
   lstat,
   unlink,
+  rename,
+  rm,
 } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import { z } from "zod";
 import type { Runtime, RuntimeApi, Release } from "../shared/model";
@@ -351,30 +353,43 @@ export function createProxyRuntime(options: {
         return {};
       await initialize();
       z.string().min(1).max(200).parse(input.agentId);
-      const recipeId = randomUUID();
+      // Every launch claims its own identity, so one recipe per conversation is
+      // enough. A fresh recipe per session open would accumulate forever.
+      const recipeId = createHash("sha256")
+        .update(input.provider + "\0" + input.agentId)
+        .digest("hex")
+        .slice(0, 32)
+        .replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, "$1-$2-$3-$4-$5");
       const path = join(recipesDirectory, recipeId + ".json");
       // The launch closure may outlive a proxy. It receives a recipe, not a
-      // single-use endpoint. Every actual OS launch allocates its own identity.
-      const file = await open(
-        path,
-        constants.O_WRONLY |
-          constants.O_CREAT |
-          constants.O_EXCL |
-          constants.O_NOFOLLOW,
-        0o600,
-      );
+      // single-use endpoint. Replace atomically so a concurrent launch reads
+      // either complete version.
+      const temporary = path + "." + randomUUID() + ".tmp";
       try {
-        await file.writeFile(
-          JSON.stringify({
-            version: 1,
-            recipeId,
-            agentId: input.agentId,
-            provider: input.provider,
-            recordsDirectory,
-          }) + "\n",
+        const file = await open(
+          temporary,
+          constants.O_WRONLY |
+            constants.O_CREAT |
+            constants.O_EXCL |
+            constants.O_NOFOLLOW,
+          0o600,
         );
+        try {
+          await file.writeFile(
+            JSON.stringify({
+              version: 1,
+              recipeId,
+              agentId: input.agentId,
+              provider: input.provider,
+              recordsDirectory,
+            }) + "\n",
+          );
+        } finally {
+          await file.close();
+        }
+        await rename(temporary, path);
       } finally {
-        await file.close();
+        await rm(temporary, { force: true });
       }
       return { RUNTIME_PROXY_RECIPE_FILE: path };
     },

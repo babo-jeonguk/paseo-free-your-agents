@@ -384,3 +384,23 @@ test("disconnected owners keep their last tabs as Sync pending", async (t) => {
   assert.equal((await control.list()).rows[0].syncPending, true);
   assert.equal((await control.list()).rows.length, 1);
 });
+
+test("periodic reports refresh freshness without rewriting state", async (t) => {
+  const f = await setup(t);
+  const epoch = await f.owner("desktop", ["a"]);
+  const saved = (await f.store.read()).revision;
+  f.advance(40_000);
+  assert.equal(
+    await f.control.publish({ ownerId: "desktop", epoch, revision: 0, agentIds: ["a"] }),
+    true,
+  );
+  f.advance(40_000);
+  assert.equal((await f.control.list()).rows[0]!.syncPending, false);
+  assert.equal((await f.store.read()).revision, saved);
+  f.advance(10_000);
+  assert.equal((await f.control.list()).rows[0]!.syncPending, true);
+  assert.equal(
+    await f.control.publish({ ownerId: "desktop", epoch, revision: 0, agentIds: ["b"] }),
+    false,
+  );
+});

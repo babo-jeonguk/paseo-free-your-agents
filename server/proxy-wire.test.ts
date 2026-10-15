@@ -6,11 +6,15 @@ import { pumpJsonLines, writeJsonLine, createProtocolWriter } from "./proxy-wire
 test("protocol framing preserves split UTF-8, embedded separators, CRLF and final unterminated line", async () => {
   const wire = Buffer.from('{"text":"한\u2028글"}\r\n{"last":true}');
   const chunks = Array.from(wire, (byte) => Buffer.from([byte]));
-  const messages: unknown[] = [];
-  await pumpJsonLines(Readable.from(chunks), async (message) => {
+  const messages: unknown[] = [],
+    frames: string[] = [];
+  await pumpJsonLines(Readable.from(chunks), async (message, frame) => {
     messages.push(message);
+    frames.push(frame.toString("utf8"));
   });
   assert.deepEqual(messages, [{ text: "한\u2028글" }, { last: true }]);
+  // Unchanged messages are forwarded as these exact newline-terminated bytes.
+  assert.deepEqual(frames, ['{"text":"한\u2028글"}\r\n', '{"last":true}\n']);
 });
 
 test("slow destination consumes one protocol frame before the next handler is admitted", async () => {

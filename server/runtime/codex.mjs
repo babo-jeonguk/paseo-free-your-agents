@@ -9,7 +9,12 @@ import { listenControl } from "./control.mjs";
 import { claimProxyConnection } from "../proxy-launch.mjs";
 import { ownProxyLease } from "../proxy-lease.mjs";
 import { createReplyCache } from "../proxy-cache.mjs";
-import { pumpJsonLines, writeJsonLine, createProtocolWriter } from "../proxy-wire.mjs";
+import {
+  pumpJsonLines,
+  writeJsonLine,
+  writeProtocolBytes,
+  createProtocolWriter,
+} from "../proxy-wire.mjs";
 import { createProtocolTracker } from "../proxy-tracker.mjs";
 import { createEncryptedReplay, encodeJson, ReplayInterrupted } from "../proxy-replay.mjs";
 import { createMemorySampler, reclaimReleasedMemory } from "./memory.mjs";
@@ -131,10 +136,11 @@ async function snapshot() {
     replayByteLimit: replay.stats().maxBytes,
   };
 }
-function write(message) {
+// Pass the source frame when the message is forwarded unchanged.
+function write(message, frame) {
   if (!child || child.exitCode !== null || child.signalCode !== null)
     throw new Error("Codex CLI is not running");
-  return writeJsonLine(child.stdin, message);
+  return frame ? writeProtocolBytes(child.stdin, frame) : writeJsonLine(child.stdin, message);
 }
 function request(method, params = {}) {
   const id = prefix + ++serial;
@@ -173,7 +179,7 @@ function notification(message) {
   if (message.method === "turn/completed") turns.delete(params.threadId + ":" + params.turn?.id);
   if (message.method === "serverRequest/resolved") serverRequests.delete(params.requestId);
 }
-async function receive(message) {
+async function receive(message, frame) {
   if (Object.hasOwn(message, "id") && !message.method) {
     const pending = internal.get(message.id);
     if (pending) {
@@ -212,7 +218,7 @@ async function receive(message) {
     notification(message);
     if (suppressNotifications) return;
   }
-  await output(message);
+  await (frame ? writer.forward(frame) : output(message));
 }
 async function launch() {
   const nativeEnv = Object.fromEntries(
@@ -457,10 +463,10 @@ async function release(expectedGeneration) {
   reclaimReleasedMemory(() => phase === "released");
   return { status: "released", saved };
 }
-async function incoming(message) {
+async function incoming(message, frame) {
   if (!message.method) {
     serverRequests.delete(message.id);
-    await write(message);
+    await write(message, frame);
     return;
   }
   if (
@@ -515,7 +521,7 @@ async function incoming(message) {
         ? { params: message.params }
         : {}),
     });
-  await write(message);
+  await write(message, frame);
 }
 
 async function control(message) {
@@ -553,13 +559,13 @@ if (process.env.RUNTIME_PROXY_SOCKET) {
 }
 await launch();
 phase = "running";
-void pumpJsonLines(process.stdin, async (message) => {
+void pumpJsonLines(process.stdin, async (message, frame) => {
   const execution = message.method === "turn/start";
   if (execution) writeAdmissions++;
   await enqueue(async () => {
     if (execution) writeAdmissions--;
     try {
-      await incoming(message);
+      await incoming(message, frame);
     } catch (error) {
       if (error instanceof ReplayInterrupted) {
         await shutdown(1, "Encrypted history replay was interrupted");

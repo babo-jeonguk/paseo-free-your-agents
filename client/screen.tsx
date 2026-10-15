@@ -2,7 +2,7 @@ import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { useRpc } from "@getpaseo/plugin/client";
 import { Icon, Modal, ScrollView, TextInput } from "@getpaseo/plugin/client/react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useReducer } from "react";
+import { memo, useCallback, useEffect, useMemo, useReducer } from "react";
 import { ActivityIndicator, Platform, Pressable, Text, View } from "react-native";
 import type { Row } from "../shared/model";
 import { HoursSchema } from "../shared/model";
@@ -259,7 +259,9 @@ function stopLabel(row: Row, now: number): string {
   if (remaining < 60) return `Stop in ${remaining} min`;
   return `Stop in ${Math.ceil(remaining / 60)} hours`;
 }
-function ConversationRow({
+// Polling replaces only changed rows (React Query structural sharing), so memoized
+// rows with stable callbacks skip re-rendering unchanged conversations.
+const ConversationRow = memo(function ConversationRow({
   row,
   compact,
   styles,
@@ -274,7 +276,7 @@ function ConversationRow({
   theme: Theme;
   now: number;
   open?: (id: string) => void;
-  menu(): void;
+  menu(row: Row): void;
 }) {
   const runtime = row.runtime;
   return (
@@ -328,7 +330,7 @@ function ConversationRow({
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`Process controls: ${runtime.title}`}
-          onPress={menu}
+          onPress={() => menu(row)}
           style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
         >
           <Icon name="Ellipsis" size={18} color={theme.colors.foregroundMuted} />
@@ -336,7 +338,7 @@ function ConversationRow({
       </View>
     </View>
   );
-}
+});
 
 export function RuntimeScreen({
   theme,
@@ -452,13 +454,21 @@ export function RuntimeScreen({
   function close() {
     if (!mutation.isPending) dispatch({ type: "dialog", value: null });
   }
-  const open = navigation
-    ? (agentId: string) => {
-        // TODO: When Paseo supports detaching a single conversation into a popup,
-        // use it to open a conversation preview.
-        navigation.openAgent({ agentId });
-      }
-    : undefined;
+  const open = useMemo(
+    () =>
+      navigation
+        ? (agentId: string) => {
+            // TODO: When Paseo supports detaching a single conversation into a popup,
+            // use it to open a conversation preview.
+            navigation.openAgent({ agentId });
+          }
+        : undefined,
+    [navigation],
+  );
+  const menu = useCallback(
+    (row: Row) => dispatch({ type: "dialog", value: { kind: "menu", row } }),
+    [],
+  );
   function moveFilter(event: {
     key: string;
     preventDefault(): void;
@@ -695,9 +705,9 @@ export function RuntimeScreen({
               compact={layout.compact}
               theme={theme}
               styles={styles}
-              now={view.now}
+              now={row.stop?.state === "scheduled" ? view.now : 0}
               open={open}
-              menu={() => dispatch({ type: "dialog", value: { kind: "menu", row } })}
+              menu={menu}
             />
           ))}
           {!query.isPending && shown.length === 0 && (

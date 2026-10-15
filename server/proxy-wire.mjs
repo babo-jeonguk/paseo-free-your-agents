@@ -1,7 +1,11 @@
+const NEWLINE = Buffer.from("\n");
+
 // Consume one frame at a time. Awaiting the handler applies backpressure instead
 // of retaining a promise/parsed payload for every incoming readline event.
 // This bounds queued frames, NOT a single arbitrarily large JSON line. A future
 // streaming envelope reader must preserve injected hook/RPC obligations too.
+// The handler also receives the newline-terminated source bytes, so an unchanged
+// message can be forwarded without serializing a second copy.
 export async function pumpJsonLines(input, receive) {
   let parts = [],
     bytes = 0;
@@ -11,13 +15,13 @@ export async function pumpJsonLines(input, receive) {
     for (;;) {
       const newline = chunk.indexOf(10, offset);
       if (newline === -1) break;
-      const fragment = chunk.subarray(offset, newline);
+      const fragment = chunk.subarray(offset, newline + 1);
       let frame = parts.length
         ? Buffer.concat([...parts, fragment], bytes + fragment.length)
         : fragment;
       parts = [];
       bytes = 0;
-      await receive(JSON.parse(frame.toString("utf8")));
+      await receive(JSON.parse(frame.toString("utf8")), frame);
       frame = null;
       offset = newline + 1;
     }
@@ -27,7 +31,10 @@ export async function pumpJsonLines(input, receive) {
       bytes += remainder.length;
     }
   }
-  if (bytes) await receive(JSON.parse(Buffer.concat(parts, bytes).toString("utf8")));
+  if (bytes) {
+    const frame = Buffer.concat([...parts, NEWLINE], bytes + 1);
+    await receive(JSON.parse(frame.toString("utf8")), frame);
+  }
 }
 
 // Resolve after the writable has consumed this frame; callers must await it.
@@ -84,5 +91,6 @@ export function createProtocolWriter(output) {
   return {
     transaction,
     send: (value) => transaction((write) => write(JSON.stringify(value) + "\n")),
+    forward: (frame) => transaction((write) => write(frame)),
   };
 }

@@ -9,7 +9,7 @@ import { listenControl } from "./control.mjs";
 import { claimProxyConnection } from "../proxy-launch.mjs";
 import { ownProxyLease } from "../proxy-lease.mjs";
 import { createReplyCache } from "../proxy-cache.mjs";
-import { pumpJsonLines, writeJsonLine } from "../proxy-wire.mjs";
+import { pumpJsonLines, writeJsonLine, writeProtocolBytes } from "../proxy-wire.mjs";
 import { createProtocolTracker } from "../proxy-tracker.mjs";
 import { createMemorySampler, reclaimReleasedMemory } from "./memory.mjs";
 const sampleMemory = createMemorySampler();
@@ -63,10 +63,11 @@ let activeUsers = 0,
   protocolSupported = true;
 let closeControl = async () => {};
 const output = (value) => writeJsonLine(process.stdout, value);
-function write(value) {
+// Pass the source frame when the message is forwarded unchanged.
+function write(value, frame) {
   if (!child || child.exitCode !== null || child.signalCode !== null)
     throw new Error("Claude is not running");
-  return writeJsonLine(child.stdin, value);
+  return frame ? writeProtocolBytes(child.stdin, frame) : writeJsonLine(child.stdin, value);
 }
 function enqueue(work) {
   const result = tail.then(work);
@@ -93,7 +94,7 @@ function reply(id, response = {}, error) {
     },
   });
 }
-async function receive(message) {
+async function receive(message, frame) {
   if (message.type === "control_request") {
     const request = message.request;
     if (request?.subtype === "hook_callback" && request.callback_id === hookId) {
@@ -182,7 +183,7 @@ async function receive(message) {
   }
   if (message.type === "active_goal") activeGoal = message.value != null;
   if (message.type === "result") activeUsers = Math.max(0, activeUsers - 1);
-  await output(message);
+  await (frame ? writeProtocolBytes(process.stdout, frame) : output(message));
 }
 async function launch(resume = false) {
   let args = [...originalArgs];
@@ -400,7 +401,7 @@ async function wake() {
   for (const value of settings) await request(value);
   phase = "running";
 }
-async function incoming(message) {
+async function incoming(message, frame) {
   if (message.type === "user") {
     if (phase === "released") await wake();
     activeUsers++;
@@ -429,12 +430,13 @@ async function incoming(message) {
         initializer = structuredClone(value);
       else protocolSupported = false;
       message = { ...message, request: attachHook(value) };
+      frame = undefined;
     }
     forwarded.set(message.request_id, value);
   }
   if (message.type === "control_response" || message.type === "control_cancel_request")
     serverRequests.delete(message.response?.request_id ?? message.request_id);
-  await write(message);
+  await write(message, frame);
 }
 async function shutdown(code = 0) {
   if (quitting) return;
@@ -466,13 +468,13 @@ closeControl = await listenControl({
 });
 await launch();
 phase = "running";
-void pumpJsonLines(process.stdin, async (message) => {
+void pumpJsonLines(process.stdin, async (message, frame) => {
   const user = message.type === "user";
   if (user) admissions++;
   await enqueue(async () => {
     if (user) admissions--;
     try {
-      await incoming(message);
+      await incoming(message, frame);
     } catch {
       await shutdown(1);
     }
