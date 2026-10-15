@@ -733,8 +733,7 @@ export function RuntimeScreen({
         </View>
         <Text style={styles.muted}>
           Open tabs across this host’s windows and devices. Stopping a process keeps its
-          conversation and tab. Memory is estimated process RSS; shared pages may be counted more
-          than once.
+          conversation and tab.
         </Text>
       </ScrollView>
       <Modal
