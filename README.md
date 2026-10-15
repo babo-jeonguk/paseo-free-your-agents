@@ -4,6 +4,12 @@
 
 Stop an idle Codex or Claude process now, or schedule a stop after a chosen number of hours. Working agents wait until their work finishes. Conversations, history, and tabs stay available; sending another message resumes the same agent session.
 
+![Runtime Control with process memory, provider setup and open conversations](assets/runtime-control.png)
+
+![Open conversations grouped as Idle and No process, with a scheduled stop](assets/conversations.png)
+
+![Process control menu for one conversation](assets/stop-menu.png)
+
 ## Install and enable
 
 Requires **Paseo daemon and app 0.11.2**, with plugins enabled in the daemon configuration.
