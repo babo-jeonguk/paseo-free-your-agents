@@ -2,11 +2,12 @@ import type {
   PluginHandlerContext,
   PluginSessionOpenRequest,
 } from "@getpaseo/plugin/server";
+import { access } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { createCommandSetup, createCommandReceiptStore } from "./command-setup";
 import { createConversationMetadata } from "./conversation-metadata";
-import { prepareRuntimeCommand } from "./runtime-assets";
+import { prepareRuntimeCommand, recordRuntime } from "./runtime-assets";
 import { createProxyRuntime } from "./proxy-runtime";
 import { runtimeApi, type RuntimeApi } from "../shared/model";
 
@@ -32,6 +33,18 @@ export function createBackend(
     directory: join(directory, "runtime"),
     metadata: (ids) => (metadata ? metadata(ids) : Promise.resolve([])),
   });
+  const launchers = join(directory, "launchers");
+  // Launchers exist only after a command was enabled; loading never creates them.
+  const refreshRuntime = () =>
+    access(launchers)
+      .then(
+        () => recordRuntime(launchers),
+        () => {},
+      )
+      .catch((error: unknown) =>
+        console.error("[runtime-control] runtime pointer", error),
+      );
+  void refreshRuntime();
   function attach(api: Paseo) {
     if (!paseo) {
       paseo = api;
@@ -47,11 +60,7 @@ export function createBackend(
                 join(directory, "setup", provider + ".json"),
               ),
               prepareCommand: (original) =>
-                prepareRuntimeCommand(
-                  join(directory, "launchers"),
-                  provider,
-                  original,
-                ),
+                prepareRuntimeCommand(launchers, provider, original),
             }),
           );
       official = runtimeApi(api);
@@ -116,6 +125,7 @@ export function createBackend(
       } catch {
         return request;
       }
+      await refreshRuntime();
       try {
         return {
           ...request,

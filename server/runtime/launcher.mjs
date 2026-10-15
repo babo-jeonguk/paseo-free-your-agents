@@ -4,6 +4,9 @@ import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { dirname } from "node:path";
 
+// Set only by our shim so an Electron runtime starts as Node. Paseo never
+// passes it to CLIs, so remove it before any native process inherits it.
+delete process.env.ELECTRON_RUN_AS_NODE;
 const profilePath = process.argv[2],
   args = process.argv.slice(3);
 const directory = await lstat(dirname(profilePath));

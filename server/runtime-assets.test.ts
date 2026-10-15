@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, writeFile, readFile, rm, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdtemp, writeFile, readFile, rm, stat, chmod } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { prepareRuntimeCommand } from "./runtime-assets";
+import { prepareRuntimeCommand, recordRuntime } from "./runtime-assets";
 
 test("materialized launcher keeps original argv, delegates version/history, and strips private capabilities", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "runtime-assets-test-"));
@@ -45,4 +45,48 @@ test("materialized launcher keeps original argv, delegates version/history, and 
   await writeFile(launcher!, "changed by another owner");
   await assert.rejects(prepareRuntimeCommand(join(root, "assets"), "codex", native), /changed/);
   assert.equal(await readFile(launcher!, "utf8"), "changed by another owner");
+});
+
+test("launcher starts an Electron daemon runtime as Node and survives a moved runtime", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "runtime-assets-electron-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const peer = join(root, "native.mjs");
+  await writeFile(
+    peer,
+    `process.stdout.write(JSON.stringify({electron:process.env.ELECTRON_RUN_AS_NODE ?? null,runtime:process.env.FIXTURE_RUNTIME ?? null}));`,
+  );
+  // Like the desktop binary: without ELECTRON_RUN_AS_NODE it would open the app.
+  async function fakeElectron(name: string) {
+    const path = join(root, name);
+    await writeFile(
+      path,
+      `#!/bin/sh\n[ "$ELECTRON_RUN_AS_NODE" = 1 ] || { echo "desktop app opened" >&2; exit 3; }\nFIXTURE_RUNTIME=${name} exec ${JSON.stringify(process.execPath)} "$@"\n`,
+    );
+    await chmod(path, 0o700);
+    return path;
+  }
+  const mounted = await fakeElectron("mounted");
+  const launchers = join(root, "launchers");
+  const [launcher] = await prepareRuntimeCommand(
+    launchers,
+    "codex",
+    [process.execPath, peer],
+    mounted,
+  );
+  const run = async (PATH = process.env.PATH) =>
+    JSON.parse((await promisify(execFile)(launcher!, ["history"], { env: { PATH } })).stdout);
+  assert.deepEqual(await run(), { electron: null, runtime: "mounted" });
+  // A relaunched AppImage mounts elsewhere; the plugin records the new runtime.
+  await rm(mounted);
+  await recordRuntime(launchers, await fakeElectron("remounted"));
+  assert.deepEqual(await run(), { electron: null, runtime: "remounted" });
+  // Without a recorded runtime, fall back to Node on PATH.
+  await rm(join(root, "remounted"));
+  assert.deepEqual(await run(), { electron: null, runtime: null });
+  await assert.rejects(run(join(root, "empty")), (error: { code?: number; stderr?: string }) => {
+    assert.equal(error.code, 127);
+    assert.match(error.stderr ?? "", /Node\.js runtime not found/);
+    return true;
+  });
+  assert.equal(dirname(launcher!).startsWith(launchers), true);
 });
