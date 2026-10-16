@@ -62,7 +62,7 @@ async function removeOwned(path, identity) {
 // No PID is killed and no key/history payload is needed for orphan cleanup.
 async function sweepOrphans(parentDirectory) {
   const names = (await readdir(parentDirectory))
-    .filter((name) => /^paseo-rc-replay-[a-zA-Z0-9]+$/.test(name))
+    .filter((name) => /^paseo-fya-replay-[a-zA-Z0-9]+$/.test(name))
     .slice(0, 256);
   for (const name of names) {
     try {
@@ -162,14 +162,14 @@ export async function createEncryptedReplay({
   // Windows temp directories are already per user.
   parentDirectory ??= join(
     tmpdir(),
-    windows ? "paseo-rc-replays" : `paseo-rc-replays-${process.getuid?.()}`,
+    windows ? "paseo-fya-replays" : `paseo-fya-replays-${process.getuid?.()}`,
   );
   await mkdir(parentDirectory, { recursive: true, mode: 0o700 });
   await privateDirectory(parentDirectory);
   await sweepOrphans(parentDirectory);
   const start = await ownStart();
   if (!start) throw new Error("Replay ownership requires a process identity");
-  const directory = await mkdtemp(join(parentDirectory, "paseo-rc-replay-"));
+  const directory = await mkdtemp(join(parentDirectory, "paseo-fya-replay-"));
   const directoryIdentity = await privateDirectory(directory);
   const ownerPath = join(directory, "owner.json");
   const ownerHandle = await open(

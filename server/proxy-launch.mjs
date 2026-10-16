@@ -47,7 +47,7 @@ export async function claimProxyConnection(recipeFile, expectedProvider) {
   if (recipe.recordsDirectory !== directory) throw new Error("Invalid connection directory");
   await privateDirectory(directory);
   // A Windows named pipe needs no directory; its name is fresh per bridge.
-  const socketDirectory = windows ? null : await mkdtemp(join(tmpdir(), "paseo-rc-"));
+  const socketDirectory = windows ? null : await mkdtemp(join(tmpdir(), "paseo-fya-"));
   const socketPath = socketDirectory ? join(socketDirectory, "control.sock") : newControlPipe();
   try {
     if (Buffer.byteLength(socketPath) > 100) throw new Error("Control socket path is too long");

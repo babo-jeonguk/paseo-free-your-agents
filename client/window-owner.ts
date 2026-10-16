@@ -1,6 +1,6 @@
 // Plugin-owned identity only. No Paseo state or global host method is changed.
-const KEY = Symbol.for("paseo.runtime-control.window-owner.v1");
-const STORAGE = "@runtime-control:window-owner-v1";
+const KEY = Symbol.for("paseo.free-your-agents.window-owner.v1");
+const STORAGE = "@free-your-agents:window-owner-v1";
 const ownGlobal = globalThis as typeof globalThis & { [KEY]?: Promise<string> };
 const fresh = () =>
   `window_${
@@ -23,7 +23,7 @@ async function claim(): Promise<string> {
   async function acquire(id: string, ifAvailable: boolean) {
     return new Promise<boolean>((resolve, reject) => {
       void locks!
-        .request("runtime-control:" + id, { ifAvailable }, async (lock) => {
+        .request("free-your-agents:" + id, { ifAvailable }, async (lock) => {
           resolve(lock !== null);
           if (lock) await new Promise<void>(() => {}); // Window lifetime, not plugin lifetime.
         })

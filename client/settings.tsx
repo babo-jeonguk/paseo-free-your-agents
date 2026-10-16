@@ -9,7 +9,7 @@ export function ProcessSettingsScreen({ theme, host }: PluginSurfaceProps) {
   const status = useRpc(setupStatusRpc);
   const change = useRpc(setupChangeRpc);
   const queryClient = useQueryClient();
-  const queryKey = ["runtime-control", "setup", host.id];
+  const queryKey = ["free-your-agents", "setup", host.id];
   const setup = useQuery({
     queryKey,
     queryFn: () => status({}),
@@ -37,7 +37,7 @@ export function ProcessSettingsScreen({ theme, host }: PluginSurfaceProps) {
       await queryClient.invalidateQueries({ queryKey });
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["runtime-control", "inventory", host.id] });
+      await queryClient.invalidateQueries({ queryKey: ["free-your-agents", "inventory", host.id] });
     },
   });
   const muted = { color: theme.colors.foregroundMuted, fontSize: 13, lineHeight: 20 };
@@ -81,7 +81,7 @@ export function ProcessSettingsScreen({ theme, host }: PluginSurfaceProps) {
                     <SettingsRow
                       key={provider.provider}
                       label={name}
-                      hint="Managed outside Runtime Control"
+                      hint="Managed outside Free Your Agents"
                       error={error}
                     />
                   );

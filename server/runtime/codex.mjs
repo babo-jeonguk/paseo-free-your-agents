@@ -32,7 +32,7 @@ const [executable, ...args] = process.argv.slice(2);
 if (!executable || !args.includes("app-server"))
   throw new Error("Expected Codex app-server command");
 const releaseLease = await ownProxyLease("codex");
-const prefix = `runtime-control-${randomUUID()}:`;
+const prefix = `free-your-agents-${randomUUID()}:`;
 const cache = createReplyCache();
 const replay = await createEncryptedReplay({
   parentDirectory:
@@ -86,7 +86,7 @@ const trackingComplete = () =>
 function enqueue(work) {
   const next = tail.then(work);
   tail = next.catch((error) => {
-    process.stderr.write(`Runtime Control operation failed: ${error.message}\n`);
+    process.stderr.write(`Free Your Agents operation failed: ${error.message}\n`);
   });
   return next;
 }

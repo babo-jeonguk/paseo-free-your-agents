@@ -18,9 +18,9 @@ export function ownerOnly(info, mode) {
 
 // A fresh unguessable pipe per bridge. The capability token still authenticates
 // every request; the name only has to be unique and private to its record.
-export const newControlPipe = () => `\\\\.\\pipe\\paseo-rc-${randomUUID()}`;
+export const newControlPipe = () => `\\\\.\\pipe\\paseo-fya-${randomUUID()}`;
 export const isControlPipe = (path) =>
-  windows && typeof path === "string" && /^\\\\\.\\pipe\\paseo-rc-[a-f0-9-]{36}$/.test(path);
+  windows && typeof path === "string" && /^\\\\\.\\pipe\\paseo-fya-[a-f0-9-]{36}$/.test(path);
 
 // Linux: start time in clock ticks after boot, null when the process is gone and
 // undefined when it cannot be read.

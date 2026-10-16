@@ -44,7 +44,7 @@ export function createCommandSetup(input: {
 }) {
   if (!controlSupported)
     throw new Error(
-      "Runtime Control command setup is currently validated on Linux and Windows only.",
+      "Free Your Agents command setup is currently validated on Linux and Windows only.",
     );
   const fixedCommand = input.installedCommand ? Command.parse(input.installedCommand) : null;
   if (!fixedCommand && !input.prepareCommand) throw new Error("A runtime command is required.");
@@ -180,7 +180,7 @@ export function createCommandReceiptStore(path: string): CommandReceiptStore {
       try {
         const info = await file.stat();
         if (!info.isFile() || !ownerOnly(info, 0o600) || info.size > 65_536)
-          throw new Error("Runtime Control command receipt is not private or valid.");
+          throw new Error("Free Your Agents command receipt is not private or valid.");
         return Receipt.parse(JSON.parse(await file.readFile("utf8")));
       } finally {
         await file.close();

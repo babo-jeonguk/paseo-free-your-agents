@@ -23,7 +23,7 @@ import { createEncryptedReplay, encodeJson, ReplayInterrupted } from "./proxy-re
 const posix = process.platform !== "win32";
 
 async function setup(t: { after(fn: () => Promise<void>): void }, options = {}) {
-  const parentDirectory = await mkdtemp(join(tmpdir(), "rc-replay-test-"));
+  const parentDirectory = await mkdtemp(join(tmpdir(), "fya-replay-test-"));
   const store = await createEncryptedReplay({ parentDirectory, ...options });
   t.after(async () => {
     await store.close().catch(() => {});

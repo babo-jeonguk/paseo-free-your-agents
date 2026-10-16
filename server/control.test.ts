@@ -8,7 +8,7 @@ import { createFileStore } from "./store";
 import type { Runtime, RuntimeApi } from "../shared/model";
 
 async function setup(t: { after(fn: () => Promise<void>): void }) {
-  const directory = await mkdtemp(join(tmpdir(), "runtime-control-"));
+  const directory = await mkdtemp(join(tmpdir(), "free-your-agents-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   let clock = 100_000;
   const store = createFileStore(join(directory, "state.json"));

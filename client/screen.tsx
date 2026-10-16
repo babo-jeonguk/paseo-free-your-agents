@@ -498,7 +498,7 @@ export function RuntimeScreen({
   const list = useRpc(listRpc);
   const change = useRpc(changeStopRpc);
   const queryClient = useQueryClient();
-  const queryKey = useMemo(() => ["runtime-control", "inventory", host.id], [host.id]);
+  const queryKey = useMemo(() => ["free-your-agents", "inventory", host.id], [host.id]);
   const query = useQuery({
     queryKey,
     queryFn: () => list({}),
@@ -631,9 +631,9 @@ export function RuntimeScreen({
         <View style={styles.header}>
           <View style={{ gap: 5, flex: 1 }}>
             <Text accessibilityRole="header" style={styles.title}>
-              Runtime Control
+              Free Your Agents
             </Text>
-            <Text style={styles.muted}>Free agent memory without losing the conversation.</Text>
+            <Text style={styles.muted}>Reclaim memory from idle agents without losing the conversation.</Text>
           </View>
           <ControlButton
             label={query.isFetching ? "Refreshing…" : "Refresh"}

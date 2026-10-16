@@ -34,7 +34,7 @@ export function createFileStore(
   path = join(
     process.env.PASEO_HOME || join(homedir(), ".paseo"),
     "plugin-data",
-    "runtime-control",
+    "free-your-agents",
     "state.json",
   ),
 ): StateStore {

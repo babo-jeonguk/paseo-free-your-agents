@@ -18,7 +18,7 @@ function authorized(actual, expected) {
 export async function listenControl({ path, token, handle }) {
   if (!/^[a-f0-9]{64}$/.test(token ?? "")) throw new Error("Missing control capability");
   if (windows) {
-    if (!isControlPipe(path)) throw new Error("Control endpoint must be a Runtime Control pipe");
+    if (!isControlPipe(path)) throw new Error("Control endpoint must be a Free Your Agents pipe");
   } else {
     const directory = await lstat(dirname(path));
     if (

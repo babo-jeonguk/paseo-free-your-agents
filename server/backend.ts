@@ -18,7 +18,7 @@ export function createBackend(
   directory = join(
     process.env.PASEO_HOME || join(homedir(), ".paseo"),
     "plugin-data",
-    "runtime-control",
+    "free-your-agents",
   ),
 ) {
   let paseo: Paseo | null = null,
@@ -56,7 +56,7 @@ export function createBackend(
         () => {},
       )
       .catch((error: unknown) =>
-        console.error("[runtime-control] runtime pointer", error),
+        console.error("[free-your-agents] runtime pointer", error),
       );
   void refreshRuntime();
   function attach(api: Paseo) {
@@ -151,7 +151,7 @@ export function createBackend(
         };
       } catch {
         console.error(
-          "[runtime-control] Control preparation failed; preserving normal CLI startup.",
+          "[free-your-agents] Control preparation failed; preserving normal CLI startup.",
         );
         const env = { ...request.env };
         delete env.RUNTIME_PROXY_RECIPE_FILE;

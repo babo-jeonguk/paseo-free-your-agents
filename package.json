@@ -1,16 +1,16 @@
 {
-  "name": "paseo-runtime-control",
+  "name": "paseo-free-your-agents",
   "version": "1.0.0",
   "private": false,
-  "description": "Free agent memory without losing the conversation",
+  "description": "Reclaim memory from idle agents without losing the conversation",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/babo-jeonguk/paseo-runtime-control.git"
+    "url": "https://github.com/babo-jeonguk/paseo-free-your-agents.git"
   },
-  "homepage": "https://github.com/babo-jeonguk/paseo-runtime-control#readme",
+  "homepage": "https://github.com/babo-jeonguk/paseo-free-your-agents#readme",
   "bugs": {
-    "url": "https://github.com/babo-jeonguk/paseo-runtime-control/issues"
+    "url": "https://github.com/babo-jeonguk/paseo-free-your-agents/issues"
   },
   "files": [
     "paseo-plugin.json",

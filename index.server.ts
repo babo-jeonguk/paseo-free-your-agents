@@ -54,7 +54,7 @@ export default function contribute(server: PluginServerContext) {
     ticking = true;
     void control
       .tick()
-      .catch((error: unknown) => console.error("[runtime-control] scheduler", error))
+      .catch((error: unknown) => console.error("[free-your-agents] scheduler", error))
       .finally(() => {
         ticking = false;
       });

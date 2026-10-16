@@ -30,7 +30,7 @@ if (process.env.RUNTIME_PROXY_RECIPE_FILE)
     await claimProxyConnection(process.env.RUNTIME_PROXY_RECIPE_FILE, "claude"),
   );
 const releaseLease = await ownProxyLease("claude");
-const hookId = "runtime-control-stop-" + randomUUID();
+const hookId = "free-your-agents-stop-" + randomUUID();
 const forwarded = createProtocolTracker(),
   serverRequests = createProtocolTracker(),
   internal = new Map(),
@@ -249,7 +249,7 @@ async function launch(resume = false) {
   await once(current, "spawn");
 }
 function request(request) {
-  const id = "runtime-control-internal-" + randomUUID();
+  const id = "free-your-agents-internal-" + randomUUID();
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       internal.delete(id);

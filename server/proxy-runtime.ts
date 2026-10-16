@@ -166,13 +166,13 @@ export function createProxyRuntime(options: {
         const info = await file.stat();
         if (!info.isFile() || !ownerOnly(info, 0o600) || info.size > 8192) {
           throw new Error(
-            "Runtime Control connection record is not private or valid.",
+            "Free Your Agents connection record is not private or valid.",
           );
         }
         const contents = await file.readFile("utf8");
         const record = RecordSchema.parse(JSON.parse(contents));
         if (name !== record.connectionId + ".json")
-          throw new Error("Runtime Control connection identity is invalid.");
+          throw new Error("Free Your Agents connection identity is invalid.");
         if (await ownerGone(record)) {
           const path = join(recordsDirectory, name),
             current = await lstat(path).catch(
@@ -223,13 +223,13 @@ export function createProxyRuntime(options: {
       view.agentId !== record.agentId
     ) {
       throw new Error(
-        "Runtime Control endpoint belongs to a different conversation.",
+        "Free Your Agents endpoint belongs to a different conversation.",
       );
     }
     if ((view.phase === "released") !== (view.nativePid === null)) {
       // A starting process can temporarily lack a PID; report unknown until it
       // establishes one, rather than claiming it has stopped.
-      throw new Error("Runtime Control process state is not yet confirmed.");
+      throw new Error("Free Your Agents process state is not yet confirmed.");
     }
     return view;
   }

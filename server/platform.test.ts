@@ -31,7 +31,7 @@ test("Windows resolves bare CLI names through PATH and PATHEXT", windowsOnly, as
   const env = { Path: `"${bin}";${process.env.PATH}`, PATHEXT: ".EXE;.CMD" };
   assert.equal(resolveWindowsCommand("fixture", env).toLowerCase(), join(bin, "fixture.cmd").toLowerCase());
   assert.equal(resolveWindowsCommand(join(bin, "fixture"), env).toLowerCase(), join(bin, "fixture.cmd").toLowerCase());
-  assert.equal(resolveWindowsCommand("missing-runtime-control-cli", env), "missing-runtime-control-cli");
+  assert.equal(resolveWindowsCommand("missing-free-your-agents-cli", env), "missing-free-your-agents-cli");
 });
 
 test("Windows command scripts receive every argument exactly once", windowsOnly, async (t) => {

@@ -49,7 +49,7 @@ export async function ownProxyLease(provider, env = process.env) {
         directory.isSymbolicLink() ||
         directory.uid !== process.getuid() ||
         (directory.mode & 0o777) !== 0o700 ||
-        !basename(socketDirectory).startsWith("paseo-rc-")
+        !basename(socketDirectory).startsWith("paseo-fya-")
   )
     throw new Error("Invalid connection endpoint directory");
   let finished = false;

@@ -51,12 +51,12 @@ export default function contribute(client: PluginClientContext) {
       source = createPrivateTabs({
         hostId,
         owner: getWindowOwnerId,
-        onError: (message) => console.error("[runtime-control]", message),
+        onError: (message) => console.error("[free-your-agents]", message),
       });
       sources.set(hostId, source);
       reporters.push(
         startReporter(source.api, rpc, (error) =>
-          console.error("[runtime-control] tab synchronization failed", error),
+          console.error("[free-your-agents] tab synchronization failed", error),
         ),
       );
     }
@@ -97,12 +97,12 @@ export default function contribute(client: PluginClientContext) {
   });
   const stopScreen = client.addScreen({
     id: SCREEN_ID,
-    title: "Runtime Control",
+    title: "Free Your Agents",
     Component: RuntimeEntry,
   });
   const stopSidebar = client.addSidebarHeaderItem({
     id: SCREEN_ID,
-    title: "Runtime Control",
+    title: "Free Your Agents",
     Component: RuntimeItem,
   });
   if (observeHostTabs) {
@@ -114,7 +114,7 @@ export default function contribute(client: PluginClientContext) {
             observe((state: unknown) => listener(LocalStateSchema.parse(state))),
         },
         rpc,
-        (error) => console.error("[runtime-control] tab synchronization", error),
+        (error) => console.error("[free-your-agents] tab synchronization", error),
       ),
     );
   }

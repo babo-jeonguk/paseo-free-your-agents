@@ -13,7 +13,7 @@ export interface ProxyConnection {
 export async function assertPrivateDirectory(path: string): Promise<void> {
   const value = await lstat(path);
   if (!value.isDirectory() || value.isSymbolicLink() || !ownerOnly(value, 0o700)) {
-    throw new Error("Runtime Control needs an owner-only directory.");
+    throw new Error("Free Your Agents needs an owner-only directory.");
   }
 }
 
@@ -29,7 +29,7 @@ export async function proxyRequest(
   if (windows) {
     // Named pipes have no directory or mode; only accept our own pipe names.
     if (!isControlPipe(connection.socketPath))
-      throw new Error("Runtime Control endpoint ownership is invalid.");
+      throw new Error("Free Your Agents endpoint ownership is invalid.");
   } else {
     await assertPrivateDirectory(dirname(connection.socketPath));
     const endpoint = await lstat(connection.socketPath);
@@ -39,7 +39,7 @@ export async function proxyRequest(
       endpoint.uid !== process.getuid?.() ||
       (endpoint.mode & 0o777) !== 0o600
     ) {
-      throw new Error("Runtime Control endpoint ownership is invalid.");
+      throw new Error("Free Your Agents endpoint ownership is invalid.");
     }
   }
   return new Promise((resolve, reject) => {
@@ -56,12 +56,12 @@ export async function proxyRequest(
       else resolve(value);
     };
     const timeout = setTimeout(
-      () => finish(new Error("Runtime Control request timed out.")),
+      () => finish(new Error("Free Your Agents request timed out.")),
       timeoutMs,
     );
-    socket.on("error", () => finish(new Error("Runtime Control endpoint is unavailable.")));
+    socket.on("error", () => finish(new Error("Free Your Agents endpoint is unavailable.")));
     socket.on("close", () =>
-      finish(new Error("Runtime Control connection closed before its result.")),
+      finish(new Error("Free Your Agents connection closed before its result.")),
     );
     socket.on("connect", () =>
       socket.write(JSON.stringify({ ...request, token: connection.token }) + "\n"),
@@ -69,7 +69,7 @@ export async function proxyRequest(
     socket.on("data", (chunk: Buffer) => {
       bytes += chunk.length;
       if (bytes > 64 * 1024) {
-        finish(new Error("Runtime Control response is too large."));
+        finish(new Error("Free Your Agents response is too large."));
         return;
       }
       buffer += chunk.toString("utf8");
@@ -77,14 +77,14 @@ export async function proxyRequest(
       try {
         const response: unknown = JSON.parse(buffer.slice(0, buffer.indexOf("\n")));
         if (!response || typeof response !== "object") throw new Error("Invalid proxy response.");
-        if ("error" in response) throw new Error("Runtime Control proxy rejected the request.");
+        if ("error" in response) throw new Error("Free Your Agents proxy rejected the request.");
         if (!("id" in response) || response.id !== request.id || !("result" in response)) {
-          throw new Error("Runtime Control response identity mismatch.");
+          throw new Error("Free Your Agents response identity mismatch.");
         }
         finish(null, response.result);
       } catch {
         // Never include raw wire data or capabilities in loggable exceptions.
-        finish(new Error("Runtime Control received an invalid proxy response."));
+        finish(new Error("Free Your Agents received an invalid proxy response."));
       }
     });
   });

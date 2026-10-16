@@ -14,23 +14,23 @@ export const SetupSchema = z.object({
   ),
 });
 export const setupStatusRpc = defineRpc({
-  name: "runtime-control.setup.status",
+  name: "free-your-agents.setup.status",
   input: z.object({}),
   output: SetupSchema,
 });
 export const setupChangeRpc = defineRpc({
-  name: "runtime-control.setup.change",
+  name: "free-your-agents.setup.change",
   input: z.object({ provider: z.enum(["codex", "claude"]), action: z.enum(["enable", "restore"]) }),
   output: SetupSchema,
 });
 
 export const registerOwnerRpc = defineRpc({
-  name: "runtime-control.tabs.register",
+  name: "free-your-agents.tabs.register",
   input: z.object({ ownerId: z.string().min(1).max(200) }),
   output: z.object({ epoch: z.string() }),
 });
 export const publishTabsRpc = defineRpc({
-  name: "runtime-control.tabs.publish",
+  name: "free-your-agents.tabs.publish",
   input: z.object({
     ownerId: z.string().min(1).max(200),
     epoch: z.string(),
@@ -41,12 +41,12 @@ export const publishTabsRpc = defineRpc({
   output: z.object({ accepted: z.boolean() }),
 });
 export const listRpc = defineRpc({
-  name: "runtime-control.list",
+  name: "free-your-agents.list",
   input: z.object({}),
   output: InventorySchema,
 });
 export const changeStopRpc = defineRpc({
-  name: "runtime-control.stop.change",
+  name: "free-your-agents.stop.change",
   input: z.object({
     agentId: z.string(),
     expectedGeneration: z.string().nullable(),

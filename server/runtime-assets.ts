@@ -88,7 +88,7 @@ function windowsShim(directory: string, runtime: string, bridge: string[]) {
     `if not defined runtime if exist ${quoted(runtime)} set "runtime=${runtime.replaceAll("%", "%%")}"`,
     'if not defined runtime for %%I in (node.exe) do set "runtime=%%~$PATH:I"',
     "if not defined runtime (",
-    "  echo Runtime Control: Node.js runtime not found. Restore this provider command in Runtime Control. 1>&2",
+    "  echo Free Your Agents: Node.js runtime not found. Restore this provider command in Free Your Agents. 1>&2",
     "  exit /b 127",
     ")",
     'set "ELECTRON_RUN_AS_NODE=1"',
@@ -106,7 +106,7 @@ export async function prepareRuntimeCommand(
   const command = originalCommand ?? [provider];
   const fold = (value: string) => (windows ? value.toLowerCase() : value);
   if (command.some((arg) => fold(arg).startsWith(fold(directory + sep))))
-    throw new Error("Cannot adopt a Runtime Control command without its original receipt.");
+    throw new Error("Cannot adopt a Free Your Agents command without its original receipt.");
   // Paseo starts Claude without a shell, which cannot run a command script on
   // Windows. A bare `node` command makes Paseo start the bridge on its own
   // runtime instead; version probes still find Node on PATH.
@@ -149,7 +149,7 @@ export async function prepareRuntimeCommand(
       `IFS= read -r runtime 2>/dev/null < ${quote(join(directory, "runtime"))}`,
       `[ -x "$runtime" ] || runtime=${quote(runtime)}`,
       '[ -x "$runtime" ] || runtime=$(command -v node) || {',
-      "  echo 'Runtime Control: Node.js runtime not found. Restore this provider command in Runtime Control.' >&2",
+      "  echo 'Free Your Agents: Node.js runtime not found. Restore this provider command in Free Your Agents.' >&2",
       "  exit 127",
       "}",
       'ELECTRON_RUN_AS_NODE=1 exec "$runtime" ' +
