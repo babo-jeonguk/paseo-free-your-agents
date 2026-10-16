@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { stat } from "node:fs/promises";
 import { listenControl } from "./control.mjs";
+import { codexVersions } from "./versions.mjs";
 import { claimProxyConnection } from "../proxy-launch.mjs";
 import { ownProxyLease } from "../proxy-lease.mjs";
 import { createReplyCache } from "../proxy-cache.mjs";
@@ -207,7 +208,10 @@ async function receive(message, frame) {
         cache.set(key(original.method, original.params), message.result);
       if (original.method === "initialize") {
         initialize = original.params;
-        protocolSupported = /\/0\.162\.1(?:\s|$)/.test(message.result?.userAgent ?? "");
+        const agent = message.result?.userAgent ?? "";
+        protocolSupported = codexVersions.some((version) =>
+          new RegExp(`/${version.replaceAll(".", "\\.")}(?:\\s|$)`).test(agent),
+        );
       }
       if (original.method === "thread/start" || original.method === "thread/resume") {
         // Retain identity only. Native resume/start replies can contain the

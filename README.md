@@ -20,7 +20,7 @@ It helps when many conversations stay open: each one keeps its CLI process runni
 
 - **Daemon host:** Linux or Windows. On macOS the screen loads, but process controls are unavailable.
 - **Paseo:** v0.11 or later, with plugins enabled.
-- **Agent CLIs:** process control is validated with Codex v0.162.1 and Claude v2.1.299. With other versions, conversations work normally but process control stays off.
+- **Agent CLIs:** process control is validated with Codex v0.162.1 and v0.163.0, and Claude v2.1.299 and v2.1.301. With other versions, conversations work normally but process control stays off.
 - **Windows:** Claude needs Node.js on `PATH`, because Paseo starts Claude without a shell.
 - **Apps:** tested in Paseo's web app. Native iOS and Android apps are not validated yet.
 
@@ -63,7 +63,7 @@ Paseo v0.11 has no public plugin API to release an idle provider process without
 - **Bridge.** The bridge (about 20 MB) stays running after a stop to keep the conversation connected. It is not counted in the process totals.
 - **Memory.** On Linux, the native process tree's PSS, or an RSS estimate when PSS is unavailable. On Windows, its working set. The two are not directly comparable.
 - **What it reads.** Conversation titles, providers and workspaces through Paseo's API; open tab IDs from the Paseo app windows; process memory from the operating system. Open tabs are read through a read-only adapter for the app's internals until Paseo offers a public API.
-- **What it stores.** Schedules, open-tab lists and the original launch commands in the plugin's `plugin-data` directory. After a stop, long Codex histories are replayed from temporary files encrypted with a key kept only in the bridge's memory, and deleted on resume or exit.
+- **What it stores.** Schedules, open-tab lists and the original launch commands in the plugin's `plugin-data` directory. After a stop, long Codex histories are replayed from temporary files encrypted with a key kept only in the bridge's memory, and deleted on resume or exit. On Windows, Paseo force-closes a conversation's processes when it is archived; the next Codex conversation then deletes its unreadable files.
 - **Network.** The plugin makes no network requests of its own. The bridge talks to Paseo and the agent CLIs over local sockets or named pipes; the CLIs reach their providers as usual.
 - **Safety.** When the plugin cannot confirm that it owns a process, or does not recognize a CLI's protocol, it never stops that process.
 
