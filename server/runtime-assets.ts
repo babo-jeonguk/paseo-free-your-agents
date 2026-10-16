@@ -10,6 +10,9 @@ const hash = (value: string) => createHash("sha256").update(value).digest("hex")
 const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
 // Bump when the launcher shim text changes, so new shims get new immutable paths.
 const SHIM_VERSION = "2";
+// The launcher build prepareRuntimeCommand points at. A provider command made by
+// an older build is moved to this one after an update.
+export const launcherBuild = runtimeAssets.version + "." + SHIM_VERSION;
 
 // A desktop AppImage mounts the daemon's runtime at a new path on every launch.
 // Launchers read this pointer first, so the plugin refreshes it whenever it runs.

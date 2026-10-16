@@ -35,7 +35,11 @@ You can also paste the source into **Settings → Plugins → Plugin source**. P
 When the plugin first runs, it turns on process control for Codex and Claude. This changes one setting per provider, its launch command, so that conversations start through a small bridge (see [How it works](#how-it-works-and-data-access)). To leave a provider unchanged, turn its switch off in **Settings → Plugins → free-your-agents → Settings**. It stays off.
 
 - **New conversations** use process control right away.
-- **Conversations that were already open** keep their previous launch settings until the next Paseo daemon restart. The plugin never restarts the daemon. Until then they show **Status unavailable**.
+- **Conversations that were already open** keep their previous launch settings until the next Paseo daemon restart. Until then they show **Status unavailable**.
+
+Restart the Paseo daemon after installing so that open conversations get process control too: use **Restart daemon** in the host's settings, or run `paseo daemon restart`. Choose a moment when no agent is working. The plugin never restarts the daemon itself.
+
+Updates work the same way. New conversations use the updated version right away; open ones keep the previous version until the daemon restarts.
 
 To check that it works, start a new conversation and wait for the first reply. Then open **Free Your Agents** from the sidebar. The conversation shows **Idle** with its memory.
 
@@ -65,7 +69,7 @@ Paseo v0.11 has no public plugin API to release an idle provider process without
 
 ## Troubleshooting
 
-- **An existing conversation shows Status unavailable.** It was open before the plugin was installed and adopts process control after the next Paseo daemon restart.
+- **An existing conversation shows Status unavailable.** It was open before the plugin was installed. Restart the Paseo daemon to give it process control.
 - **Process control turned off after a CLI update.** That CLI version is not validated yet. Conversations keep working; stopping stays off until it is.
 - **A total shows `296+ MB`.** Some conversations are not measured yet. The number is the sum of the measured ones.
 - **A stop does not happen right away.** The agent is busy. The stop waits until its work finishes.

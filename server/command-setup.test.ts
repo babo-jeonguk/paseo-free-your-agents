@@ -92,6 +92,98 @@ test("first-run enable turns a provider on once and never overrides a later choi
   assert.equal(f.writes.length, 2);
 });
 
+test("an update points an installed command at the new launcher and keeps the original for restore", async () => {
+  const f = fixture(["/fixture/custom", "--literal"]);
+  await createCommandSetup({ ...f.options, launcher: "1" }).enable();
+  const updated = createCommandSetup({
+    ...f.options,
+    launcher: "2",
+    installedCommand: ["/fixture/node", "/fixture/proxy-2.mjs"],
+  });
+  assert.equal((await updated.upgrade()).state, "installed");
+  assert.deepEqual(f.config.providers.codex!.command, ["/fixture/node", "/fixture/proxy-2.mjs"]);
+  assert.equal(f.receipt()!.launcher, "2");
+  assert.equal(f.receipt()!.previousCommand, undefined);
+  assert.equal((await updated.upgrade()).state, "installed");
+  assert.equal(f.writes.length, 2);
+  assert.equal((await updated.restore()).state, "restored");
+  assert.deepEqual(f.config.providers.codex!.command, ["/fixture/custom", "--literal"]);
+});
+
+test("an update leaves turned-off, changed and current commands alone", async () => {
+  const next = { launcher: "2", installedCommand: ["/fixture/proxy-2.mjs"] };
+  const off = fixture();
+  await createCommandSetup({ ...off.options, launcher: "1" }).enable();
+  await off.manager.restore();
+  assert.equal((await createCommandSetup({ ...off.options, ...next }).upgrade()).state, "restored");
+  assert.equal(off.writes.length, 2);
+
+  const changed = fixture();
+  await createCommandSetup({ ...changed.options, launcher: "1" }).enable();
+  changed.config.providers.codex!.command = ["/fixture/user-choice"];
+  assert.equal(
+    (await createCommandSetup({ ...changed.options, ...next }).upgrade()).state,
+    "changed",
+  );
+  assert.deepEqual(changed.config.providers.codex!.command, ["/fixture/user-choice"]);
+
+  // A desktop daemon's runtime can move between launches, which changes the
+  // prepared path. Only a new launcher build replaces the command.
+  const moved = fixture();
+  await createCommandSetup({ ...moved.options, launcher: "1" }).enable();
+  const same = createCommandSetup({ ...moved.options, ...next, launcher: "1" });
+  assert.equal((await same.upgrade()).state, "installed");
+  assert.deepEqual(moved.config.providers.codex!.command, moved.options.installedCommand);
+  assert.equal(moved.writes.length, 1);
+});
+
+test("a receipt from before launcher tracking is updated once", async () => {
+  const f = fixture();
+  await f.manager.enable();
+  assert.equal(f.receipt()!.launcher, undefined);
+  const updated = createCommandSetup({ ...f.options, launcher: "2" });
+  assert.equal((await updated.upgrade()).state, "installed");
+  assert.equal(f.receipt()!.launcher, "2");
+  assert.equal(f.writes.length, 1, "An unchanged command is not patched again");
+});
+
+test("an interrupted update resumes or restores from its receipt", async () => {
+  const lost = fixture();
+  await createCommandSetup({ ...lost.options, launcher: "1" }).enable();
+  const next = { launcher: "2", installedCommand: ["/fixture/proxy-2.mjs"] };
+  lost.loseResponse();
+  await assert.rejects(createCommandSetup({ ...lost.options, ...next }).upgrade(), /response lost/);
+  assert.equal(lost.receipt()!.phase, "upgrading");
+  assert.equal((await createCommandSetup({ ...lost.options, ...next }).status()).state, "installed");
+  assert.equal(lost.receipt()!.previousCommand, undefined);
+  assert.equal(lost.writes.length, 2);
+
+  for (const recovery of ["upgrade", "restore"] as const) {
+    const f = fixture();
+    await createCommandSetup({ ...f.options, launcher: "1" }).enable();
+    const refused = createCommandSetup({
+      ...f.options,
+      ...next,
+      config: {
+        ...f.options.config,
+        patch: async () => {
+          throw new Error("Not admitted");
+        },
+      },
+    });
+    await assert.rejects(refused.upgrade(), /Not admitted/);
+    const reloaded = createCommandSetup({ ...f.options, ...next });
+    assert.equal((await reloaded.status()).state, "pending");
+    if (recovery === "upgrade") {
+      assert.equal((await reloaded.upgrade()).state, "installed");
+      assert.deepEqual(f.config.providers.codex!.command, next.installedCommand);
+    } else {
+      assert.equal((await reloaded.restore()).state, "restored");
+      assert.deepEqual(f.config.providers.codex!.command, ["codex"]);
+    }
+  }
+});
+
 test("a command receipt cannot be used to restore another provider", async () => {
   const f = fixture();
   await f.manager.enable();

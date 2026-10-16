@@ -15,7 +15,12 @@ const Receipt = z
     provider: z.enum(["codex", "claude"]).default("codex"),
     originalCommand: Command.nullable(),
     installedCommand: Command,
-    phase: z.enum(["installing", "installed", "restoring", "restored", "cancelled"]),
+    // The launcher build installedCommand runs. Absent in receipts written
+    // before updates replaced launchers.
+    launcher: z.string().min(1).max(200).optional(),
+    // Only while upgrading: the command being replaced.
+    previousCommand: Command.optional(),
+    phase: z.enum(["installing", "installed", "upgrading", "restoring", "restored", "cancelled"]),
   })
   .strict();
 export type CommandReceipt = z.infer<typeof Receipt>;
@@ -31,9 +36,16 @@ export interface CommandSetupStatus {
 }
 const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right);
 const restoredCommand = (receipt: CommandReceipt) => receipt.originalCommand ?? [receipt.provider];
+// The command an interrupted install or update was replacing.
+const replacedCommand = (receipt: CommandReceipt) =>
+  receipt.phase === "upgrading" ? receipt.previousCommand! : receipt.originalCommand;
+const settled = ({ previousCommand: _, ...receipt }: CommandReceipt): CommandReceipt => ({
+  ...receipt,
+  phase: "installed",
+});
 
-// No startup/cleanup side effects. The caller invokes enable, enableIfNew or restore;
-// neither action stops a daemon, conversation, or native process. This boundary
+// No startup/cleanup side effects. The caller invokes enable, enableIfNew, upgrade
+// or restore; none stops a daemon, conversation, or native process. This boundary
 // can later be replaced by a first-class provider-command API.
 export function createCommandSetup(input: {
   provider?: "codex" | "claude";
@@ -41,6 +53,9 @@ export function createCommandSetup(input: {
   store: CommandReceiptStore;
   installedCommand?: string[];
   prepareCommand?(originalCommand: string[] | null): Promise<string[]>;
+  // Identifies the launcher build prepareCommand points at. When it changes,
+  // upgrade() moves an installed command to the new build.
+  launcher?: string;
 }) {
   if (!controlSupported)
     throw new Error(
@@ -78,11 +93,11 @@ export function createCommandSetup(input: {
     if (receipt.phase === "installed" && owned) state = "installed";
     if (receipt.phase === "restored" && restored) state = "restored";
     if (receipt.phase === "cancelled" && original) state = "not-installed";
-    if (receipt.phase === "installing") {
+    if (receipt.phase === "installing" || receipt.phase === "upgrading") {
       if (owned) {
-        await input.store.write({ ...receipt, phase: "installed" });
+        await input.store.write(settled(receipt));
         state = "installed";
-      } else if (original) state = "pending";
+      } else if (same(current, replacedCommand(receipt))) state = "pending";
     }
     if (receipt.phase === "restoring") {
       if (restored) {
@@ -105,16 +120,22 @@ export function createCommandSetup(input: {
     await input.config.patch({ providers: { [provider]: { command } } });
     return describe(receipt);
   }
-  async function enable(receipt: CommandReceipt | null) {
-    if (receipt && receipt.phase !== "restored" && receipt.phase !== "cancelled") {
-      const status = await describe(receipt);
-      if (status.state !== "pending" || receipt.phase !== "installing") return status;
-      return patchIfUnchanged(receipt, receipt.originalCommand, receipt.installedCommand);
-    }
-    const originalCommand = await currentCommand();
-    const installedCommand = Command.parse(
+  const prepare = async (originalCommand: string[] | null) =>
+    Command.parse(
       input.prepareCommand ? await input.prepareCommand(originalCommand) : fixedCommand,
     );
+  // Finishes an interrupted install or update; otherwise reports the state.
+  async function resume(receipt: CommandReceipt) {
+    const status = await describe(receipt);
+    if (status.state !== "pending" || (receipt.phase !== "installing" && receipt.phase !== "upgrading"))
+      return status;
+    return patchIfUnchanged(receipt, replacedCommand(receipt), receipt.installedCommand);
+  }
+  async function enable(receipt: CommandReceipt | null) {
+    if (receipt && receipt.phase !== "restored" && receipt.phase !== "cancelled")
+      return resume(receipt);
+    const originalCommand = await currentCommand();
+    const installedCommand = await prepare(originalCommand);
     if (same(originalCommand, installedCommand))
       throw new Error("Cannot adopt a command without its original installation receipt.");
     receipt = {
@@ -123,6 +144,7 @@ export function createCommandSetup(input: {
       provider,
       originalCommand,
       installedCommand: [...installedCommand],
+      ...(input.launcher && { launcher: input.launcher }),
       phase: "installing",
     };
     // Save the original command before changing anything. A lost response or
@@ -138,6 +160,33 @@ export function createCommandSetup(input: {
       serial(async () => {
         const receipt = await read();
         return receipt ? describe(receipt) : enable(null);
+      }),
+    // After a plugin update, moves a command this plugin installed to the new
+    // launcher. originalCommand is kept, so restore still returns to it. A
+    // provider that is off, or whose command was changed elsewhere, is left alone.
+    upgrade: () =>
+      serial(async () => {
+        let receipt = await read();
+        if (!receipt) return describe(null);
+        if (receipt.phase === "upgrading") return resume(receipt);
+        const status = await describe(receipt);
+        if (status.state !== "installed" || !input.launcher || receipt.launcher === input.launcher)
+          return status;
+        receipt = settled(receipt);
+        const installedCommand = await prepare(receipt.originalCommand);
+        if (same(installedCommand, receipt.installedCommand)) {
+          await input.store.write({ ...receipt, launcher: input.launcher });
+          return status;
+        }
+        receipt = {
+          ...receipt,
+          previousCommand: receipt.installedCommand,
+          installedCommand,
+          launcher: input.launcher,
+          phase: "upgrading",
+        };
+        await input.store.write(receipt);
+        return patchIfUnchanged(receipt, receipt.previousCommand!, installedCommand);
       }),
     restore: () =>
       serial(async () => {
@@ -158,6 +207,9 @@ export function createCommandSetup(input: {
             explicitDefaultOnRestore: receipt.originalCommand === null,
           };
         }
+        // An update that never patched config still runs the previous command.
+        if (receipt.phase === "upgrading" && status.state === "pending")
+          receipt = { ...settled(receipt), installedCommand: receipt.previousCommand! };
         receipt = { ...receipt, phase: "restoring" };
         await input.store.write(receipt);
         return patchIfUnchanged(receipt, receipt.installedCommand, restoredCommand(receipt));

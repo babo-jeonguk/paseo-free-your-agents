@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { createCommandSetup, createCommandReceiptStore } from "./command-setup";
 import { createConversationMetadata } from "./conversation-metadata";
-import { prepareRuntimeCommand, recordRuntime } from "./runtime-assets";
+import { launcherBuild, prepareRuntimeCommand, recordRuntime } from "./runtime-assets";
 import { createProxyRuntime, type RuntimeProvider } from "./proxy-runtime";
 import { bridgeProvider, type ProviderEntries } from "./provider-profiles";
 import { runtimeApi, type RuntimeApi } from "../shared/model";
@@ -75,16 +75,21 @@ export function createBackend(
               ),
               prepareCommand: (original) =>
                 prepareRuntimeCommand(launchers, provider, original),
+              launcher: launcherBuild,
             }),
           );
       official = runtimeApi(api);
       // Process control is on by default: the first attach turns on providers
       // that were never set up. Turning one off leaves a receipt that keeps it off.
+      // After an update, new conversations start this version's bridge.
       const defaults = Promise.all(
         [...setups].map(([provider, setup]) =>
-          setup.enableIfNew().catch((error: unknown) =>
-            console.error(`[free-your-agents] default ${provider} setup`, error),
-          ),
+          setup
+            .enableIfNew()
+            .then(() => setup.upgrade())
+            .catch((error: unknown) =>
+              console.error(`[free-your-agents] default ${provider} setup`, error),
+            ),
         ),
       );
       ready = defaults.then(status).catch((error) => {
