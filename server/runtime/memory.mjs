@@ -1,16 +1,41 @@
 import { readFile, readdir } from "node:fs/promises";
 import { windows } from "../platform.mjs";
 
-export function reclaimReleasedMemory(isReleased) {
-  // Our standalone launcher exposes GC only in the bridge process. Run after
-  // the release stack unwinds, and skip if a new message has already resumed.
-  if (
-    typeof globalThis.gc === "function" &&
-    process.memoryUsage().heapUsed > 24 * 1024 * 1024
-  )
-    setImmediate(() => {
-      if (isReleased()) globalThis.gc();
-    });
+// V8 keeps the pages of collected objects pooled for reuse, resident even after
+// an ordinary full collection; only a last-resort collection returns them. Our
+// standalone launcher exposes GC only in the bridge process. Collect once the
+// protocol has been quiet for a while after enough traffic, and after a stop.
+export function createMemoryReclaimer({
+  gc = globalThis.gc,
+  quietMs = 3000,
+  minBytes = 4 * 1024 * 1024,
+} = {}) {
+  let bytes = 0,
+    timer = null;
+  const collect = () => {
+    clearTimeout(timer);
+    timer = null;
+    bytes = 0;
+    gc({ type: "major", execution: "sync", flavor: "last-resort" });
+  };
+  return {
+    // Each protocol frame, as a Buffer or string.
+    note(frame) {
+      if (typeof gc !== "function") return;
+      bytes += frame.length;
+      if (bytes < minBytes) return;
+      if (timer) timer.refresh();
+      else timer = setTimeout(collect, quietMs).unref();
+    },
+    // Run after the release stack unwinds, and skip if a new message has
+    // already resumed.
+    released(isReleased) {
+      if (typeof gc !== "function") return;
+      setImmediate(() => {
+        if (isReleased()) collect();
+      });
+    },
+  };
 }
 
 // Only descend from the native process we spawned. Read-only, cached, and

@@ -85,6 +85,21 @@ test("streamed JSON preserves escapes and surrogate pairs at encoder slice bound
   assert.throws(() => [...encodeJson({ invalid: undefined })], /native JSON values/);
 });
 
+test("streamed JSON stays in bounded pieces for large and multibyte histories", () => {
+  const value = {
+    turns: Array.from({ length: 3000 }, (_, index) => ({
+      id: index,
+      text: index % 2 ? "한".repeat(9000) : "\u0000".repeat(index % 7),
+      done: index % 3 === 0,
+      nothing: null,
+    })),
+  };
+  const chunks = [...encodeJson(value)];
+  assert.ok(chunks.length > 100);
+  assert.ok(chunks.every((chunk) => chunk.length > 0 && chunk.length < 100 * 1024));
+  assert.equal(Buffer.concat(chunks).toString("utf8"), JSON.stringify(value));
+});
+
 test("tampering, truncation, reordered chunks and corrupted manifest fail before any output", async (t) => {
   for (const mode of ["ciphertext", "truncate", "reorder", "manifest"]) {
     const { store, file } = await setup(t, { chunkBytes: 64 });

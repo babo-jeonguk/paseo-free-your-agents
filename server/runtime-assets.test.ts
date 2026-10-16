@@ -171,7 +171,7 @@ test("Windows Claude command is a bare node argv that Paseo starts on its own ru
     peer,
   ]);
   assert.equal(command[0], "node");
-  assert.equal(command[1], "--expose-gc");
+  assert.deepEqual(command.slice(1, 3), ["--expose-gc", "--max-semi-space-size=1"]);
   // Paseo replaces a bare `node` with its own runtime and sets Electron's switch.
   const { stdout } = await promisify(execFile)(process.execPath, [...command.slice(1), "history"], {
     env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },

@@ -12,4 +12,4 @@ When the plugin first runs, it turns on process control for Codex and Claude by 
 
 The plugin reads conversation titles, providers and workspaces through Paseo's API, open tab IDs from the app windows, and process memory from the operating system. It stores schedules, open-tab lists and original launch commands in its plugin data. After a stop, long Codex histories are replayed from encrypted temporary files that are deleted on resume. It makes no network requests of its own.
 
-The bridge, about 15 MB per conversation, keeps running after a stop and is not counted in the totals. Memory is PSS on Linux and working set on Windows. Open tabs are read through a read-only adapter for the app's internals until Paseo offers a public API. It is tested in the web app; native iOS and Android apps are not validated yet.
+The bridge, about 20 MB per conversation, keeps running after a stop and is not counted in the totals. Memory is PSS on Linux and working set on Windows. Open tabs are read through a read-only adapter for the app's internals until Paseo offers a public API. It is tested in the web app; native iOS and Android apps are not validated yet.

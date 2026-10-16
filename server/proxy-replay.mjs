@@ -103,44 +103,64 @@ async function sweepOrphans(parentDirectory) {
   }
 }
 
-// Native responses are JSON values. Encode them in small pieces so encryption
+// Native responses are JSON values. Encode them in bounded pieces so encryption
 // does not allocate another whole transcript string. Parsing the native line
 // still has its own transient allocation; this module does not hide that fact.
+// Text collects into pieces of about 16K characters (under 100 KB of UTF-8, as
+// an escaped 8K slice is at most 48 KB); long strings are escaped in slices.
+const SLICE = 8192,
+  PIECE = 16384;
 export function* encodeJson(value) {
+  let text = "";
+  const ready = [];
+  const append = (part) => {
+    text += part;
+    if (text.length >= PIECE) {
+      ready.push(Buffer.from(text));
+      text = "";
+    }
+  };
   function* string(value) {
-    yield Buffer.from('"');
-    for (let offset = 0; offset < value.length; offset += 8192)
-      yield Buffer.from(JSON.stringify(value.slice(offset, offset + 8192)).slice(1, -1));
-    yield Buffer.from('"');
+    if (value.length <= SLICE) return append(JSON.stringify(value));
+    append('"');
+    for (let offset = 0; offset < value.length; offset += SLICE) {
+      append(JSON.stringify(value.slice(offset, offset + SLICE)).slice(1, -1));
+      if (ready.length) yield* ready.splice(0);
+    }
+    append('"');
   }
   function* visit(value) {
     if (typeof value === "string") yield* string(value);
     else if (value === null || typeof value === "number" || typeof value === "boolean")
-      yield Buffer.from(JSON.stringify(value));
+      append(JSON.stringify(value));
     else if (Array.isArray(value)) {
-      yield Buffer.from("[");
+      append("[");
       for (let index = 0; index < value.length; index++) {
-        if (index) yield Buffer.from(",");
+        if (index) append(",");
         yield* visit(value[index]);
+        if (ready.length) yield* ready.splice(0);
       }
-      yield Buffer.from("]");
+      append("]");
     } else if (
       value &&
       typeof value === "object" &&
       Object.getPrototypeOf(value) === Object.prototype
     ) {
-      yield Buffer.from("{");
+      append("{");
       let count = 0;
       for (const name of Object.keys(value)) {
-        if (count++) yield Buffer.from(",");
+        if (count++) append(",");
         yield* string(name);
-        yield Buffer.from(":");
+        append(":");
         yield* visit(value[name]);
+        if (ready.length) yield* ready.splice(0);
       }
-      yield Buffer.from("}");
+      append("}");
     } else throw new Error("Replay accepts native JSON values only");
   }
   yield* visit(value);
+  if (ready.length) yield* ready.splice(0);
+  if (text) yield Buffer.from(text);
 }
 
 export class ReplayInterrupted extends Error {
@@ -345,14 +365,16 @@ export async function createEncryptedReplay({
             const nonce = randomBytes(12),
               cipher = createCipheriv("aes-256-gcm", secret, nonce);
             cipher.setAAD(aad(entry, kind, entry.chunks, plain.length));
-            const encrypted = Buffer.concat([cipher.update(plain), cipher.final()]);
+            const encrypted = cipher.update(plain),
+              final = cipher.final();
             const header = Buffer.alloc(HEADER_BYTES);
             header[0] = kind;
             header.writeUInt32BE(encrypted.length, 1);
             nonce.copy(header, 5);
             cipher.getAuthTag().copy(header, 17);
-            await file.writeFile(header);
-            await file.writeFile(encrypted);
+            const record = final.length ? [header, encrypted, final] : [header, encrypted];
+            if ((await file.writev(record)).bytesWritten !== total)
+              throw new Error("Replay write was incomplete");
             entry.bytes += total;
           }
           let pending = Buffer.alloc(chunkBytes),
