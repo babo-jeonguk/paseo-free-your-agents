@@ -15,10 +15,14 @@ import {
   processTotal,
   pendingStop,
   memoryLabel,
+  memorySortLabels,
+  nextMemorySort,
   providerLabel,
+  sortByMemory,
   statusLabel,
   visible,
   type Filter,
+  type MemorySort,
 } from "./filter";
 
 type Theme = PluginScreenProps["theme"];
@@ -26,6 +30,9 @@ type Dialog = { kind: "menu" | "stop"; row: Row } | null;
 interface ViewState {
   query: string;
   selected: Filter[];
+  sort: MemorySort;
+  // Set only by a press, so polling re-sorts rows without announcing.
+  sortNotice: string;
   dialog: Dialog;
   hours: string;
   error: string | null;
@@ -35,6 +42,7 @@ interface ViewState {
 type Action =
   | { type: "query"; value: string }
   | { type: "filter"; value: Filter | "all" }
+  | { type: "sort" }
   | { type: "dialog"; value: Dialog }
   | { type: "hours"; value: string }
   | { type: "error"; value: string | null }
@@ -51,6 +59,13 @@ function reducer(state: ViewState, action: Action): ViewState {
         ? state.selected.filter((id) => id !== value)
         : [...state.selected, value];
       return { ...state, selected };
+    }
+    case "sort": {
+      const sort = nextMemorySort(state.sort);
+      const sortNotice = sort
+        ? `Sorted by memory, ${memorySortLabels[sort].state}.`
+        : "Default order.";
+      return { ...state, sort, sortNotice };
     }
     case "dialog":
       return {
@@ -190,6 +205,26 @@ function createStyles(theme: Theme, compact: boolean) {
     agent: { flex: compact ? undefined : 1, minWidth: 0 },
     status: { flex: compact ? undefined : 1.6, minWidth: 0 },
     memory: { flex: compact ? undefined : 1, minWidth: 0 },
+    // Fills the header's height so the whole cell is a 44 px target.
+    sortButton: {
+      minHeight: 44,
+      marginVertical: -12,
+      marginHorizontal: -6,
+      paddingHorizontal: 6,
+      flexDirection: "row" as const,
+      alignItems: "center" as const,
+      alignSelf: compact ? ("flex-start" as const) : undefined,
+      gap: 6,
+      borderRadius: 6,
+    },
+    sorted: { color: c.foreground, fontWeight: "600" as const },
+    visuallyHidden: {
+      position: "absolute" as const,
+      width: 1,
+      height: 1,
+      overflow: "hidden" as const,
+      opacity: 0,
+    },
     control: {
       flex: compact ? undefined : 2.3,
       minWidth: 0,
@@ -379,6 +414,33 @@ function ControlButton({
     </Pressable>
   );
 }
+// Unsorted shows a faint pair and a sort shows one solid triangle, so the state
+// differs in shape, not only in color. Border triangles avoid font differences.
+function SortIcon({ sort, theme }: { sort: MemorySort; theme: Theme }) {
+  const triangle = (up: boolean, color: string) => (
+    <View
+      style={{
+        width: 0,
+        height: 0,
+        borderLeftWidth: 4,
+        borderRightWidth: 4,
+        borderLeftColor: "transparent",
+        borderRightColor: "transparent",
+        ...(up
+          ? { borderBottomWidth: 5, borderBottomColor: color }
+          : { borderTopWidth: 5, borderTopColor: color }),
+      }}
+    />
+  );
+  return (
+    <View aria-hidden style={{ width: 8, height: 12, gap: 2, justifyContent: "center" }}>
+      {sort === null && triangle(true, theme.colors.foregroundMuted)}
+      {sort === null && triangle(false, theme.colors.foregroundMuted)}
+      {sort === "ascending" && triangle(true, theme.colors.foreground)}
+      {sort === "descending" && triangle(false, theme.colors.foreground)}
+    </View>
+  );
+}
 function stopLabel(row: Row, now: number): string {
   if (!row.stop) return "No stop scheduled";
   if (row.stop.state === "deferred") return "Waiting for work to finish";
@@ -489,6 +551,8 @@ export function RuntimeScreen({
   const [view, dispatch] = useReducer(reducer, {
     query: "",
     selected: [],
+    sort: null,
+    sortNotice: "",
     dialog: null,
     hours: "1",
     error: null,
@@ -530,7 +594,9 @@ export function RuntimeScreen({
       }),
   });
   const rows = query.data?.rows ?? [];
-  const shown = visible(rows, view.selected, view.query);
+  const shown = sortByMemory(visible(rows, view.selected, view.query), view.sort);
+  const sortLabels = memorySortLabels[view.sort ?? "none"];
+  const sortTitle = layout.compact ? "Sort by memory" : "Memory";
   const scheduled = rows.filter(pendingStop).length;
   const count = (label: string, value: number) => ({
     label,
@@ -757,21 +823,51 @@ export function RuntimeScreen({
           </Text>
         </View>
         <View style={styles.panel}>
-          {!layout.compact && (
-            <View style={styles.tableHeader}>
-              {[
-                { label: "Session", style: styles.session },
-                { label: "Agent", style: styles.agent },
-                { label: "Status", style: styles.status },
-                { label: "Memory", style: styles.memory },
-                { label: "Process control", style: styles.control },
-              ].map((column) => (
-                <Text key={column.label} style={[styles.muted, column.style]}>
-                  {column.label}
-                </Text>
-              ))}
-            </View>
-          )}
+          <View style={styles.tableHeader}>
+            {[
+              { label: "Session", style: styles.session },
+              { label: "Agent", style: styles.agent },
+              { label: "Status", style: styles.status },
+              { label: "Memory", style: styles.memory },
+              { label: "Process control", style: styles.control },
+            ].map((column) =>
+              column.label === "Memory" ? (
+                // Cards have no column headers, so the compact strip keeps only
+                // this button and spells out the order.
+                <Pressable
+                  key={column.label}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${sortTitle}, ${sortLabels.state}`}
+                  accessibilityHint={sortLabels.next}
+                  onPress={() => dispatch({ type: "sort" })}
+                  style={({ pressed }) => [
+                    column.style,
+                    styles.sortButton,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <Text style={[styles.muted, view.sort && styles.sorted]}>
+                    {sortTitle}
+                  </Text>
+                  <SortIcon sort={view.sort} theme={theme} />
+                  {layout.compact && (
+                    <Text style={styles.muted}>
+                      {sortLabels.state[0].toUpperCase() + sortLabels.state.slice(1)}
+                    </Text>
+                  )}
+                </Pressable>
+              ) : (
+                !layout.compact && (
+                  <Text key={column.label} style={[styles.muted, column.style]}>
+                    {column.label}
+                  </Text>
+                )
+              )
+            )}
+          </View>
+          <Text aria-live="polite" style={styles.visuallyHidden}>
+            {view.sortNotice}
+          </Text>
           {shown.map((row) => (
             <ConversationRow
               key={row.runtime.agentId}

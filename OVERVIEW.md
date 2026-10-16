@@ -1,6 +1,6 @@
 Free Your Agents shows memory use for open Codex and Claude conversations in Paseo. Stop an idle agent process now or schedule a one-time stop, while the conversation and its tab stay open. Sending another message resumes the same session. Stops wait while the agent is working, waiting for permission, or running background tasks or goals.
 
-The screen lists every open conversation on the host, across windows and devices, with its status and process memory. Filter by Idle, Working, No process or Unknown, or search by title and workspace.
+The screen lists every open conversation on the host, across windows and devices, with its status and process memory. Filter by Idle, Working, No process or Unknown, search by title and workspace, or sort by memory.
 
 ## Setup
 
