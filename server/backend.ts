@@ -78,7 +78,16 @@ export function createBackend(
             }),
           );
       official = runtimeApi(api);
-      ready = status().catch((error) => {
+      // Process control is on by default: the first attach turns on providers
+      // that were never set up. Turning one off leaves a receipt that keeps it off.
+      const defaults = Promise.all(
+        [...setups].map(([provider, setup]) =>
+          setup.enableIfNew().catch((error: unknown) =>
+            console.error(`[free-your-agents] default ${provider} setup`, error),
+          ),
+        ),
+      );
+      ready = defaults.then(status).catch((error) => {
         readinessError = error;
       });
     }

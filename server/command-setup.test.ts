@@ -82,6 +82,16 @@ test("command setup restores custom argv or an explicit default using narrow pub
   }
 });
 
+test("first-run enable turns a provider on once and never overrides a later choice", async () => {
+  const f = fixture();
+  assert.equal((await f.manager.enableIfNew()).state, "installed");
+  assert.deepEqual(f.config.providers.codex!.command, f.options.installedCommand);
+  assert.equal((await f.manager.restore()).state, "restored");
+  assert.equal((await f.manager.enableIfNew()).state, "restored");
+  assert.deepEqual(f.config.providers.codex!.command, ["codex"]);
+  assert.equal(f.writes.length, 2);
+});
+
 test("a command receipt cannot be used to restore another provider", async () => {
   const f = fixture();
   await f.manager.enable();

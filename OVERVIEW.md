@@ -1,13 +1,15 @@
-# Free Your Agents
+Free Your Agents shows memory use for open Codex and Claude conversations in Paseo. Stop an idle agent process now or schedule a one-time stop, while the conversation and its tab stay open. Sending another message resumes the same session. Stops wait while the agent is working, waiting for permission, or running background tasks or goals.
 
-**Reclaim memory from idle agents without losing the conversation.**
+The screen lists every open conversation on the host, across windows and devices, with its status and process memory. Filter by Idle, Working, No process or Unknown, or search by title and workspace.
 
-Codex can keep its app-server alive while idle. Free Your Agents lets you stop native Codex and Claude processes while preserving conversations and open tabs. Send a message to resume the same session.
+## Setup
 
-Open the labeled **Control** button to schedule a one-time stop (one hour by default), update or cancel a pending stop, or confirm **Stop process now**. Working processes offer **Stop when finished…**. Active work, permissions, background tasks, goals, and scheduled activity defer termination. Shared subagent tabs retain the parent runtime row. Disconnected windows keep **Sync pending** tab inventories.
+Process control runs on Linux and Windows daemon hosts with Paseo v0.11 or later. On macOS the screen loads, but process controls are unavailable. It is validated with Codex v0.162.1 and Claude v2.1.299. With other versions, conversations work normally but process control stays off. On Windows, Claude needs Node.js on PATH.
 
-The English interface uses Paseo's sidebar header and in-app conversation navigation. Category filters combine with OR.
+When the plugin first runs, it turns on process control for Codex and Claude by changing each provider's launch command to a small bridge. New conversations use it right away. Conversations that were already open adopt it after the next Paseo daemon restart; the plugin never restarts the daemon. To leave a provider unchanged, turn it off in Settings → Plugins → free-your-agents → Settings. Turning a provider off restores its original launch command, so do this before uninstalling.
 
-Enable providers in **Settings → Plugins → free-your-agents → Settings**. New conversations use the controls immediately; existing conversations adopt them after the next natural Paseo daemon restart. No app/daemon installation files are modified. Restore provider commands in Settings before uninstalling.
+## Data and limits
 
-Process controls work on Linux and Windows, with Paseo 0.11.2. Codex 0.162.1 and Claude 2.1.299 are validated on both; other versions keep working normally with process control disabled. On Windows, Claude controls need Node.js on PATH. The temporary read-only tab adapter uses private host internals; native mobile device validation remains pending. Unsupported protocols or disabled Claude hooks disable termination. Long-history replay uses private encrypted temporary files with keys held only in bridge memory. Lightweight bridges remain resident after native process termination.
+The plugin reads conversation titles, providers and workspaces through Paseo's API, open tab IDs from the app windows, and process memory from the operating system. It stores schedules, open-tab lists and original launch commands in its plugin data. After a stop, long Codex histories are replayed from encrypted temporary files that are deleted on resume. It makes no network requests of its own.
+
+The bridge, about 15 MB per conversation, keeps running after a stop and is not counted in the totals. Memory is PSS on Linux and working set on Windows. Open tabs are read through a read-only adapter for the app's internals until Paseo offers a public API. It is tested in the web app; native iOS and Android apps are not validated yet.

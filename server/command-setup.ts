@@ -32,7 +32,7 @@ export interface CommandSetupStatus {
 const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right);
 const restoredCommand = (receipt: CommandReceipt) => receipt.originalCommand ?? [receipt.provider];
 
-// No startup/cleanup side effects. The caller invokes enable/restore explicitly;
+// No startup/cleanup side effects. The caller invokes enable, enableIfNew or restore;
 // neither action stops a daemon, conversation, or native process. This boundary
 // can later be replaced by a first-class provider-command API.
 export function createCommandSetup(input: {
@@ -105,34 +105,39 @@ export function createCommandSetup(input: {
     await input.config.patch({ providers: { [provider]: { command } } });
     return describe(receipt);
   }
+  async function enable(receipt: CommandReceipt | null) {
+    if (receipt && receipt.phase !== "restored" && receipt.phase !== "cancelled") {
+      const status = await describe(receipt);
+      if (status.state !== "pending" || receipt.phase !== "installing") return status;
+      return patchIfUnchanged(receipt, receipt.originalCommand, receipt.installedCommand);
+    }
+    const originalCommand = await currentCommand();
+    const installedCommand = Command.parse(
+      input.prepareCommand ? await input.prepareCommand(originalCommand) : fixedCommand,
+    );
+    if (same(originalCommand, installedCommand))
+      throw new Error("Cannot adopt a command without its original installation receipt.");
+    receipt = {
+      version: 1,
+      id: randomUUID(),
+      provider,
+      originalCommand,
+      installedCommand: [...installedCommand],
+      phase: "installing",
+    };
+    // Save the original command before changing anything. A lost response or
+    // worker reload can then reconcile without guessing the previous value.
+    await input.store.write(receipt);
+    return patchIfUnchanged(receipt, originalCommand, receipt.installedCommand);
+  }
   return {
     status: () => serial(async () => describe(await read())),
-    enable: () =>
+    enable: () => serial(async () => enable(await read())),
+    // First run only: any receipt, including a restored one, records a choice.
+    enableIfNew: () =>
       serial(async () => {
-        let receipt = await read();
-        if (receipt && receipt.phase !== "restored" && receipt.phase !== "cancelled") {
-          const status = await describe(receipt);
-          if (status.state !== "pending" || receipt.phase !== "installing") return status;
-          return patchIfUnchanged(receipt, receipt.originalCommand, receipt.installedCommand);
-        }
-        const originalCommand = await currentCommand();
-        const installedCommand = Command.parse(
-          input.prepareCommand ? await input.prepareCommand(originalCommand) : fixedCommand,
-        );
-        if (same(originalCommand, installedCommand))
-          throw new Error("Cannot adopt a command without its original installation receipt.");
-        receipt = {
-          version: 1,
-          id: randomUUID(),
-          provider,
-          originalCommand,
-          installedCommand: [...installedCommand],
-          phase: "installing",
-        };
-        // Save the original command before changing anything. A lost response or
-        // worker reload can then reconcile without guessing the previous value.
-        await input.store.write(receipt);
-        return patchIfUnchanged(receipt, originalCommand, receipt.installedCommand);
+        const receipt = await read();
+        return receipt ? describe(receipt) : enable(null);
       }),
     restore: () =>
       serial(async () => {
