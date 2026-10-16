@@ -4,6 +4,7 @@ import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { dirname } from "node:path";
 import { controlSupported, nativeCommand, ownerOnly, signalNative } from "../platform.mjs";
+import { claudeVersions } from "./versions.mjs";
 
 // Set only by our shim so an Electron runtime starts as Node. Paseo never
 // passes it to CLIs, so remove it before any native process inherits it.
@@ -86,7 +87,7 @@ if (!interactive) {
         timeout: 5000,
         maxBuffer: 4096,
       });
-      if (/^2\.1\.299(?:\s|$)/.test(stdout.trim()))
+      if (claudeVersions.includes(stdout.trim().split(/\s/)[0]))
         process.env.RUNTIME_PROXY_CLAUDE_VALIDATED = "1";
     } catch {
       /* Normal SDK messages still pass through. */

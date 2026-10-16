@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { stat } from "node:fs/promises";
 import { listenControl } from "./control.mjs";
+import { claudeVersions } from "./versions.mjs";
 import { claimProxyConnection } from "../proxy-launch.mjs";
 import { ownProxyLease } from "../proxy-lease.mjs";
 import { createReplyCache } from "../proxy-cache.mjs";
@@ -320,7 +321,7 @@ async function snapshot() {
       !hooksDisabled &&
       protocolSupported &&
       trackingComplete() &&
-      version === "2.1.299" &&
+      claudeVersions.includes(version) &&
       safety !== null,
     unavailableReason: hooksDisabled
       ? launchValidated
@@ -328,7 +329,7 @@ async function snapshot() {
         : "This Claude launch command or CLI version has not been validated for process control."
       : !trackingComplete()
       ? "Protocol tracking capacity was exceeded. The process was left running."
-      : !protocolSupported || (version && version !== "2.1.299")
+      : !protocolSupported || (version && !claudeVersions.includes(version))
       ? "This Claude version or operation has not been validated for process control."
       : "Claude stop safety has not yet been established. SDK hooks must be enabled.",
   };
@@ -340,7 +341,7 @@ async function release(expectedGeneration) {
     return { status: "unsupported", reason: "Claude SDK hooks are disabled for this invocation." };
   if (phase !== "running" || !initializer || !sessionId)
     return { status: "busy", reason: "Not initialized" };
-  if (!protocolSupported || version !== "2.1.299")
+  if (!protocolSupported || !claudeVersions.includes(version))
     return { status: "unsupported", reason: "Claude protocol is not validated" };
   if (!trackingComplete())
     return {
