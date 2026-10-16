@@ -7,8 +7,10 @@ import {
   filters,
   matches,
   memoryTotal,
+  nextMemorySort,
   pendingStop,
   processTotal,
+  sortByMemory,
   statusLabel,
   visible,
 } from "./filter";
@@ -179,4 +181,47 @@ test("totals sum measured rows and mark unmeasured ones as a lower bound", () =>
   });
   assert.equal(processTotal([measured("a", 1), stopped]).value, "1");
   assert.equal(processTotal([unknown("u")]).value, "Unknown");
+});
+
+test("memory sort cycles highest first, lowest first, then the host order", () => {
+  assert.equal(nextMemorySort(null), "descending");
+  assert.equal(nextMemorySort("descending"), "ascending");
+  assert.equal(nextMemorySort("ascending"), null);
+});
+
+test("memory sort keeps unmeasured rows last and ties in host order", () => {
+  const MiB = 1024 * 1024;
+  const sized = (id: string, bytes: number | null) => {
+    const value = row(id, bytes === 0, null);
+    value.runtime.memoryBytes = bytes;
+    return value;
+  };
+  // "same" differs from "big" by less than the 1 MB the row label shows.
+  const rows = [
+    sized("unmeasured", null),
+    sized("small", 120 * MiB),
+    sized("big", 880 * MiB),
+    sized("stopped", 0),
+    sized("same", 880 * MiB + 1024),
+    sized("pending", null),
+  ];
+  const ids = (sorted: Row[]) => sorted.map((value) => value.runtime.agentId);
+  assert.deepEqual(ids(sortByMemory(rows, "descending")), [
+    "big",
+    "same",
+    "small",
+    "stopped",
+    "unmeasured",
+    "pending",
+  ]);
+  assert.deepEqual(ids(sortByMemory(rows, "ascending")), [
+    "stopped",
+    "small",
+    "big",
+    "same",
+    "unmeasured",
+    "pending",
+  ]);
+  assert.equal(sortByMemory(rows, null), rows);
+  assert.deepEqual(ids(rows), ["unmeasured", "small", "big", "stopped", "same", "pending"]);
 });

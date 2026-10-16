@@ -10,7 +10,7 @@ It helps when many conversations stay open: each one keeps its CLI process runni
 
 ## What you can do
 
-- **See where memory goes.** Every open conversation across the windows and devices connected to the host, with its provider, status and process memory, plus totals.
+- **See where memory goes.** Every open conversation across the windows and devices connected to the host, with its provider, status and process memory, plus totals. Sort by memory to find the largest.
 - **Find what you can free.** Filter by **Idle**, **Working**, **No process** or **Unknown**, or search by title and workspace.
 - **Stop now or later.** Stop an idle process immediately, or schedule a one-time stop for one conversation (1 hour by default, from 15 minutes to 7 days).
 - **Let work finish first.** A stop waits while the agent is responding, waiting for permission, or running background tasks, goals or scheduled activity.

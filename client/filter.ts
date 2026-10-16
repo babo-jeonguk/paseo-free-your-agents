@@ -96,6 +96,33 @@ export function processTotal(rows: Row[]): Total {
     accessibilityLabel: `Processes: ${unknown ? "at least " : ""}${running} running.${note}`,
   };
 }
+export type MemorySort = "descending" | "ascending" | null;
+// Largest first, as task managers start their memory columns; the third press
+// restores the host order.
+export function nextMemorySort(sort: MemorySort): MemorySort {
+  if (sort === null) return "descending";
+  if (sort === "descending") return "ascending";
+  return null;
+}
+export const memorySortLabels = {
+  descending: { state: "highest first", next: "Sort lowest first." },
+  ascending: { state: "lowest first", next: "Return to the default order." },
+  none: { state: "not sorted", next: "Sort highest first." },
+} as const;
+// Compare the megabytes shown, so rows with the same label keep the host order
+// instead of trading places on every poll. Unmeasured rows stay last either way.
+export function sortByMemory(rows: Row[], sort: MemorySort): Row[] {
+  if (sort === null) return rows;
+  const sign = sort === "ascending" ? 1 : -1;
+  const shown = (row: Row) =>
+    row.runtime.memoryBytes === null ? null : Math.round(row.runtime.memoryBytes / MIB);
+  return [...rows].sort((a, b) => {
+    const left = shown(a);
+    const right = shown(b);
+    if (left === null || right === null) return (left === null ? 1 : 0) - (right === null ? 1 : 0);
+    return (left - right) * sign;
+  });
+}
 export function providerLabel(provider: string): string {
   const labels: Record<string, string> = { codex: "Codex", claude: "Claude" };
   return labels[provider] ?? provider;
