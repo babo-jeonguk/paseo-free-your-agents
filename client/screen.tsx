@@ -11,6 +11,8 @@ import {
   controlNote,
   filters,
   matches,
+  memoryTotal,
+  processTotal,
   pendingStop,
   memoryLabel,
   providerLabel,
@@ -411,20 +413,18 @@ export function RuntimeScreen({
   });
   const rows = query.data?.rows ?? [];
   const shown = visible(rows, view.selected, view.query);
-  const processCount = rows.filter((row) => row.runtime.presence === "running").length;
-  const memory = rows.reduce((total, row) => total + (row.runtime.memoryBytes ?? 0), 0);
-  const memoryKnown = rows.every((row) => row.runtime.memoryBytes !== null);
   const scheduled = rows.filter(pendingStop).length;
+  const count = (label: string, value: number) => ({
+    label,
+    value: String(value),
+    caption: null,
+    accessibilityLabel: `${label}: ${value}`,
+  });
   const metrics = [
-    { label: "Process memory", value: memoryKnown ? memoryLabel(memory) : "Unavailable" },
-    {
-      label: "Processes",
-      value: rows.some((row) => row.runtime.presence === "unknown")
-        ? "Unavailable"
-        : String(processCount),
-    },
-    { label: "Pending stops", value: String(scheduled) },
-    { label: "Open conversations", value: String(rows.length) },
+    { label: "Process memory", ...memoryTotal(rows) },
+    { label: "Processes", ...processTotal(rows) },
+    count("Pending stops", scheduled),
+    count("Open conversations", rows.length),
   ];
   const dialog = view.dialog;
   const currentRow = dialog
@@ -614,15 +614,24 @@ export function RuntimeScreen({
         )}
         <View style={styles.summary}>
           {metrics.map((metric) => (
-            <View key={metric.label} style={styles.metric}>
+            <View
+              key={metric.label}
+              style={styles.metric}
+              // A plain web element must not carry a label; native reads it instead
+              // of announcing the "+" symbol.
+              accessible={Platform.OS !== "web"}
+              accessibilityLabel={Platform.OS !== "web" ? metric.accessibilityLabel : undefined}
+            >
               <Text style={styles.muted}>{metric.label}</Text>
               <Text style={styles.number}>{metric.value}</Text>
+              {metric.caption && <Text style={styles.muted}>{metric.caption}</Text>}
             </View>
           ))}
         </View>
         <Text style={styles.muted}>
           Memory covers native agent processes: PSS where available, otherwise an RSS estimate.
-          Lightweight CLI bridges remain while conversations are open.
+          Lightweight CLI bridges remain while conversations are open. A conversation is measured
+          once its process starts with process controls enabled.
         </Text>
         <View style={{ gap: 8 }}>
           <View style={styles.toolbar}>

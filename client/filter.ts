@@ -55,6 +55,47 @@ export function memoryLabel(bytes: number | null): string {
   if (bytes === 0) return "—";
   return `${Math.round(bytes / 1024 / 1024).toLocaleString()} MB`;
 }
+export interface Total {
+  value: string;
+  caption: string | null;
+  accessibilityLabel: string;
+}
+const MIB = 1024 * 1024;
+// Card totals switch to GB so large sums still fit a narrow card.
+function totalSize(bytes: number) {
+  return bytes >= 10 * 1024 * MIB
+    ? { short: `${(bytes / 1024 / MIB).toFixed(1)}`, unit: "GB", spoken: "gigabytes" }
+    : { short: Math.round(bytes / MIB).toLocaleString(), unit: "MB", spoken: "megabytes" };
+}
+// Sum what was measured and mark it as a lower bound when some rows were not,
+// in the "99+" form of design-system badges. Symbols stay out of spoken labels.
+export function memoryTotal(rows: Row[]): Total {
+  const missing = rows.filter((row) => row.runtime.memoryBytes === null).length;
+  const bytes = rows.reduce((total, row) => total + (row.runtime.memoryBytes ?? 0), 0);
+  const caption = missing ? `${missing} not measured` : null;
+  const note = missing ? ` ${missing} ${missing === 1 ? "conversation" : "conversations"} not measured.` : "";
+  if (missing && bytes === 0)
+    return { value: "Not measured", caption, accessibilityLabel: `Process memory: not measured.${note}` };
+  const size = totalSize(bytes);
+  return {
+    value: `${size.short}${missing ? "+" : ""}\u00a0${size.unit}`,
+    caption,
+    accessibilityLabel: `Process memory: ${missing ? "at least " : ""}${size.short} ${size.spoken}.${note}`,
+  };
+}
+export function processTotal(rows: Row[]): Total {
+  const unknown = rows.filter((row) => row.runtime.presence === "unknown").length;
+  const running = rows.filter((row) => row.runtime.presence === "running").length;
+  const caption = unknown ? `${unknown} unknown` : null;
+  const note = unknown ? ` ${unknown} ${unknown === 1 ? "conversation" : "conversations"} unknown.` : "";
+  if (unknown && running === 0)
+    return { value: "Unknown", caption, accessibilityLabel: `Processes: unknown.${note}` };
+  return {
+    value: `${running}${unknown ? "+" : ""}`,
+    caption,
+    accessibilityLabel: `Processes: ${unknown ? "at least " : ""}${running} running.${note}`,
+  };
+}
 export function providerLabel(provider: string): string {
   const labels: Record<string, string> = { codex: "Codex", claude: "Claude" };
   return labels[provider] ?? provider;

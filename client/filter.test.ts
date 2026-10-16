@@ -6,7 +6,9 @@ import {
   controlNote,
   filters,
   matches,
+  memoryTotal,
   pendingStop,
+  processTotal,
   statusLabel,
   visible,
 } from "./filter";
@@ -136,4 +138,45 @@ test("an adoption-pending conversation stays visible and is not classified as pr
   assert.deepEqual(visible([pending], [], ""), [pending]);
   assert.deepEqual(visible([pending], ["absent"], ""), []);
   assert.deepEqual(visible([pending], ["unknown"], ""), [pending]);
+});
+
+test("totals sum measured rows and mark unmeasured ones as a lower bound", () => {
+  const MiB = 1024 * 1024;
+  const measured = (id: string, mib: number) => {
+    const value = row(id, false, null);
+    value.runtime.memoryBytes = mib * MiB;
+    return value;
+  };
+  const unknown = (id: string) => {
+    const value = row(id, false, null);
+    value.runtime.presence = "unknown";
+    value.runtime.memoryBytes = null;
+    return value;
+  };
+  const stopped = row("stopped", true, null);
+  assert.deepEqual(memoryTotal([measured("a", 200), measured("b", 97), stopped]), {
+    value: "297\u00a0MB",
+    caption: null,
+    accessibilityLabel: "Process memory: 297 megabytes.",
+  });
+  assert.deepEqual(memoryTotal([measured("a", 297), unknown("u1"), unknown("u2")]), {
+    value: "297+\u00a0MB",
+    caption: "2 not measured",
+    accessibilityLabel: "Process memory: at least 297 megabytes. 2 conversations not measured.",
+  });
+  assert.equal(memoryTotal([stopped]).value, "0\u00a0MB");
+  assert.equal(memoryTotal([]).value, "0\u00a0MB");
+  assert.deepEqual(memoryTotal([stopped, unknown("u")]), {
+    value: "Not measured",
+    caption: "1 not measured",
+    accessibilityLabel: "Process memory: not measured. 1 conversation not measured.",
+  });
+  assert.equal(memoryTotal([measured("big", 42_270), unknown("u")]).value, "41.3+\u00a0GB");
+  assert.deepEqual(processTotal([measured("a", 1), stopped, unknown("u")]), {
+    value: "1+",
+    caption: "1 unknown",
+    accessibilityLabel: "Processes: at least 1 running. 1 conversation unknown.",
+  });
+  assert.equal(processTotal([measured("a", 1), stopped]).value, "1");
+  assert.equal(processTotal([unknown("u")]).value, "Unknown");
 });
