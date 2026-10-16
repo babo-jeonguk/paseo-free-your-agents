@@ -11,9 +11,10 @@ import { ownProxyLease } from "../proxy-lease.mjs";
 import { createReplyCache } from "../proxy-cache.mjs";
 import { pumpJsonLines, writeJsonLine, writeProtocolBytes } from "../proxy-wire.mjs";
 import { createProtocolTracker } from "../proxy-tracker.mjs";
-import { createMemorySampler, reclaimReleasedMemory } from "./memory.mjs";
+import { createMemoryReclaimer, createMemorySampler } from "./memory.mjs";
 import { nativeCommand, signalNative } from "../platform.mjs";
 const sampleMemory = createMemorySampler();
+const reclaimer = createMemoryReclaimer();
 
 const [binary, ...originalArgs] = process.argv.slice(2);
 if (!binary) throw new Error("Claude command required");
@@ -235,7 +236,10 @@ async function launch(resume = false) {
   spawns++;
   nativeState = "unknown";
   safety = null;
-  void pumpJsonLines(current.stdout, receive).catch(() => shutdown(1));
+  void pumpJsonLines(current.stdout, (message, frame) => {
+    reclaimer.note(frame);
+    return receive(message, frame);
+  }).catch(() => shutdown(1));
   current.stderr.pipe(process.stderr, { end: false });
   current.stdin.on("error", () => {});
   current.on("error", () => {
@@ -386,7 +390,7 @@ async function release(expectedGeneration) {
   phase = "stopping";
   await stopNative();
   phase = "released";
-  reclaimReleasedMemory(() => phase === "released");
+  reclaimer.released(() => phase === "released");
   return { status: "released" };
 }
 async function wake() {
@@ -465,6 +469,7 @@ closeControl = await listenControl({
 await launch();
 phase = "running";
 void pumpJsonLines(process.stdin, async (message, frame) => {
+  reclaimer.note(frame);
   const user = message.type === "user";
   if (user) admissions++;
   await enqueue(async () => {

@@ -17,9 +17,10 @@ import {
 } from "../proxy-wire.mjs";
 import { createProtocolTracker } from "../proxy-tracker.mjs";
 import { createEncryptedReplay, encodeJson, ReplayInterrupted } from "../proxy-replay.mjs";
-import { createMemorySampler, reclaimReleasedMemory } from "./memory.mjs";
+import { createMemoryReclaimer, createMemorySampler } from "./memory.mjs";
 import { nativeCommand, signalNative } from "../platform.mjs";
 const sampleMemory = createMemorySampler();
+const reclaimer = createMemoryReclaimer();
 
 if (process.env.RUNTIME_PROXY_RECIPE_FILE)
   Object.assign(
@@ -239,7 +240,10 @@ async function launch() {
   child = spawned;
   generation = randomUUID();
   spawns++;
-  void pumpJsonLines(spawned.stdout, receive).catch((error) =>
+  void pumpJsonLines(spawned.stdout, (message, frame) => {
+    reclaimer.note(frame);
+    return receive(message, frame);
+  }).catch((error) =>
     shutdown(1, `Invalid provider protocol: ${error.message}`),
   );
   // In the experiment only, retain stderr in the harness process's diagnostic
@@ -456,7 +460,7 @@ async function release(expectedGeneration) {
   phase = "stopping";
   await stopChild();
   phase = "released";
-  reclaimReleasedMemory(() => phase === "released");
+  reclaimer.released(() => phase === "released");
   return { status: "released", saved };
 }
 async function incoming(message, frame) {
@@ -484,7 +488,10 @@ async function incoming(message, frame) {
         replay.replay(replayKey(message.params), {
           prefix: Buffer.from('{"id":' + JSON.stringify(message.id) + ',"result":'),
           suffix: Buffer.from("}\n"),
-          write,
+          write(chunk) {
+            reclaimer.note(chunk);
+            return write(chunk);
+          },
         }),
       );
       if (!replayed)
@@ -556,6 +563,7 @@ if (process.env.RUNTIME_PROXY_SOCKET) {
 await launch();
 phase = "running";
 void pumpJsonLines(process.stdin, async (message, frame) => {
+  reclaimer.note(frame);
   const execution = message.method === "turn/start";
   if (execution) writeAdmissions++;
   await enqueue(async () => {

@@ -60,7 +60,7 @@ Each conversation has exactly one status, so the status counts add up to **All**
 Paseo v0.11 has no public plugin API to release an idle provider process without archiving the conversation. Free Your Agents fills that gap:
 
 - **Launch command.** Turning a provider on points its launch command at a small Node bridge, through Paseo's public configuration API. Profiles that extend `codex` or `claude` without their own command use it too. Paseo's installation files and Claude's settings are not modified.
-- **Bridge.** The bridge (about 15 MB) stays running after a stop to keep the conversation connected. It is not counted in the process totals.
+- **Bridge.** The bridge (about 20 MB) stays running after a stop to keep the conversation connected. It is not counted in the process totals.
 - **Memory.** On Linux, the native process tree's PSS, or an RSS estimate when PSS is unavailable. On Windows, its working set. The two are not directly comparable.
 - **What it reads.** Conversation titles, providers and workspaces through Paseo's API; open tab IDs from the Paseo app windows; process memory from the operating system. Open tabs are read through a read-only adapter for the app's internals until Paseo offers a public API.
 - **What it stores.** Schedules, open-tab lists and the original launch commands in the plugin's `plugin-data` directory. After a stop, long Codex histories are replayed from temporary files encrypted with a key kept only in the bridge's memory, and deleted on resume or exit.

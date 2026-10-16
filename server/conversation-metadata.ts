@@ -12,11 +12,12 @@ export function createConversationMetadata(input: {
 }) {
   const now = input.now ?? Date.now;
   const cacheMs = input.cacheMs ?? 15_000;
-  let cached: Map<string, ConversationMetadata> | null = null;
+  type Directory = { values: Map<string, ConversationMetadata>; archived: boolean };
+  let cached: Directory | null = null;
   let expiresAt = 0;
-  let pending: Promise<Map<string, ConversationMetadata>> | null = null;
+  const pending = new Map<boolean, Promise<Directory>>();
 
-  async function refresh() {
+  async function refresh(includeArchived: boolean): Promise<Directory> {
     const values = new Map<string, ConversationMetadata>();
     const cursors = new Set<string>();
     let cursor: string | undefined;
@@ -26,7 +27,7 @@ export function createConversationMetadata(input: {
       // hosts can ignore it without enabling a provider/timeline observation.
       const options = {
         includeBackground: true,
-        filter: { includeArchived: true },
+        filter: { includeArchived },
         page: { limit: 200, ...(cursor ? { cursor } : {}) },
       };
       const result = await input.agents.list(options);
@@ -39,9 +40,9 @@ export function createConversationMetadata(input: {
         });
       }
       if (!result.pageInfo.hasMore) {
-        cached = values;
+        cached = { values, archived: includeArchived };
         expiresAt = now() + cacheMs;
-        return values;
+        return cached;
       }
       cursor = result.pageInfo.nextCursor ?? undefined;
       if (!cursor || cursors.has(cursor))
@@ -52,18 +53,25 @@ export function createConversationMetadata(input: {
     // metadata also never means the corresponding tab has closed.
     throw new Error("Conversation metadata exceeded the supported page limit.");
   }
+  function load(includeArchived: boolean) {
+    let request = pending.get(includeArchived);
+    if (!request) {
+      request = refresh(includeArchived).finally(() => pending.delete(includeArchived));
+      pending.set(includeArchived, request);
+    }
+    return request;
+  }
   return async (agentIds: string[]): Promise<ConversationMetadata[]> => {
     if (!agentIds.length) return [];
-    let values = cached;
-    if (!values || now() >= expiresAt) {
-      if (!pending)
-        pending = refresh().finally(() => {
-          pending = null;
-        });
-      values = await pending;
-    }
-    return [...new Set(agentIds)].flatMap((id) => {
-      const value = values!.get(id);
+    const ids = [...new Set(agentIds)];
+    let directory = cached && now() < expiresAt ? cached : await load(false);
+    // Every host page lists and sorts the whole directory, archived included.
+    // Open tabs rarely belong to archived conversations: list those only when
+    // a requested conversation is missing from the active ones.
+    if (!directory.archived && ids.some((id) => !directory.values.has(id)))
+      directory = await load(true);
+    return ids.flatMap((id) => {
+      const value = directory.values.get(id);
       return value ? [{ ...value }] : [];
     });
   };

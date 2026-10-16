@@ -9,7 +9,11 @@ import { ownerOnly, resolveWindowsCommand, windows } from "./platform.mjs";
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
 // Bump when the launcher shim text changes, so new shims get new immutable paths.
-const SHIM_VERSION = "2";
+const SHIM_VERSION = "3";
+// The bridge collects its own garbage (runtime/memory.mjs). A 1 MB young
+// generation keeps a mostly idle proxy from holding the much larger one V8
+// grows during a burst of protocol traffic.
+const BRIDGE_FLAGS = ["--expose-gc", "--max-semi-space-size=1"];
 // The launcher build prepareRuntimeCommand points at. A provider command made by
 // an older build is moved to this one after an update.
 export const launcherBuild = runtimeAssets.version + "." + SHIM_VERSION;
@@ -133,7 +137,7 @@ export async function prepareRuntimeCommand(
   await immutable(profile, contents, 0o600);
   await recordRuntime(directory, runtime);
   if (windows) {
-    const bridge = ["--expose-gc", join(assets, "launcher.mjs"), profile];
+    const bridge = [...BRIDGE_FLAGS, join(assets, "launcher.mjs"), profile];
     if (provider === "claude") return ["node", ...bridge];
     const launcher = join(profiles, id + ".cmd");
     await immutable(launcher, windowsShim(directory, runtime, bridge), 0o700);
@@ -156,7 +160,7 @@ export async function prepareRuntimeCommand(
       "  exit 127",
       "}",
       'ELECTRON_RUN_AS_NODE=1 exec "$runtime" ' +
-        ["--expose-gc", join(assets, "launcher.mjs"), profile].map(quote).join(" ") +
+        [...BRIDGE_FLAGS, join(assets, "launcher.mjs"), profile].map(quote).join(" ") +
         ' "$@"',
       "",
     ].join("\n"),

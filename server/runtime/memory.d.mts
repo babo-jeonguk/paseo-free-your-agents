@@ -7,4 +7,11 @@ export function createMemorySampler(
 ): (
   pid?: number,
 ) => Promise<{ nativeMemoryBytes: number | null; nativeMemoryKind?: string }>;
-export function reclaimReleasedMemory(isReleased: () => boolean): void;
+export function createMemoryReclaimer(options?: {
+  gc?: (options: { type: string; execution: string; flavor: string }) => void;
+  quietMs?: number;
+  minBytes?: number;
+}): {
+  note(frame: string | Uint8Array): void;
+  released(isReleased: () => boolean): void;
+};

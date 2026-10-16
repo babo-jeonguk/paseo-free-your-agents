@@ -204,6 +204,46 @@ test("process stop keeps its row, consumes its policy, and cancellation never st
   assert.equal((await control.list()).rows[0].runtime.presence, "absent");
 });
 
+test("stopped conversations are not polled in the background and reconcile when listed", async (t) => {
+  const { control, owner, runtimes, api } = await setup(t);
+  const epoch = await owner("desktop", ["a"]);
+  await control.change({
+    agentId: "a",
+    expectedGeneration: "boot:1",
+    expectedStopId: null,
+    action: "now",
+  });
+  let snapshots = 0;
+  const snapshot = api.snapshot;
+  api.snapshot = (input) => {
+    snapshots++;
+    return snapshot(input);
+  };
+  await control.tick();
+  assert.equal(snapshots, 0, "No pending stop: the scheduler leaves runtimes alone");
+  assert.equal((await control.list()).rows[0].stopped, true);
+  // The next message resumes the same conversation.
+  runtimes.set("a", { ...runtimes.get("a")!, presence: "running", generation: "boot:2" });
+  assert.equal((await control.list()).rows[0].stopped, false);
+  runtimes.set("a", { ...runtimes.get("a")!, presence: "absent", generation: null });
+  assert.equal(
+    (await control.list()).rows[0].stopped,
+    false,
+    "A later absence without a stop is not labeled as stopped",
+  );
+  await control.change({
+    agentId: "a",
+    expectedGeneration: null,
+    expectedStopId: null,
+    action: "cancel",
+  });
+  assert.equal(
+    await control.publish({ ownerId: "desktop", epoch, revision: 1, agentIds: [] }),
+    true,
+  );
+  assert.deepEqual((await control.list()).rows, []);
+});
+
 test("the fixed deadline is deferred through foreground and background work", async (t) => {
   const { control, owner, runtimes, releases, advance } = await setup(t);
   await owner("desktop", ["a"]);

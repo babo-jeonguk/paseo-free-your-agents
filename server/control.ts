@@ -84,14 +84,13 @@ export function createControl(store: StateStore, now: () => number = Date.now) {
   }
   async function tickInternal(): Promise<void> {
     if (!api || !api.supported()) return;
+    // Only pending stops need runtime status, so a host without one polls
+    // nothing. list() reconciles stopped rows, as it reads every row's status.
+    if ((await current()).stops.length === 0) return;
     const value = structuredClone(await current());
-    if (value.stops.length === 0 && value.stoppedIds.length === 0) return;
     const runtimes = await snapshots(
       value,
-      new Set([
-        ...value.stops.map((stop) => stop.agentId),
-        ...value.stoppedIds,
-      ]),
+      new Set(value.stops.map((stop) => stop.agentId)),
     );
     const open = membership(value);
     let changed = false;
@@ -161,11 +160,20 @@ export function createControl(store: StateStore, now: () => number = Date.now) {
       changed = true;
     }
     const previouslyStopped = value.stoppedIds;
-    value.stoppedIds = previouslyStopped.filter(
-      (id) => open.has(id) && runtimes.get(id)?.presence !== "running",
-    );
+    value.stoppedIds = stillStopped(value, runtimes, open);
     changed ||= value.stoppedIds.length !== previouslyStopped.length;
     if (changed) await save(value);
+  }
+  // A stopped conversation that runs again, or whose tabs closed, is no longer
+  // stopped. A conversation without status keeps its label.
+  function stillStopped(
+    value: State,
+    runtimes: Map<string, Runtime>,
+    open = membership(value),
+  ) {
+    return value.stoppedIds.filter(
+      (id) => open.has(id) && runtimes.get(id)?.presence !== "running",
+    );
   }
   return {
     attach(runtime: RuntimeApi | null) {
@@ -224,6 +232,7 @@ export function createControl(store: StateStore, now: () => number = Date.now) {
         next.seenAt = now();
         const open = membership(value);
         value.stops = value.stops.filter((stop) => open.has(stop.agentId));
+        value.stoppedIds = value.stoppedIds.filter((id) => open.has(id));
         await save(value);
         seen.set(owner.id, now());
         return true;
@@ -231,11 +240,18 @@ export function createControl(store: StateStore, now: () => number = Date.now) {
     },
     list(): Promise<Inventory> {
       return serialize(async () => {
-        const value = await current();
+        let value = await current();
         const supported = api !== null && api.supported();
         const runtimes = await snapshots(value);
+        const open = membership(value);
+        const stoppedIds = stillStopped(value, runtimes, open);
+        if (stoppedIds.length !== value.stoppedIds.length) {
+          value = { ...value, stoppedIds };
+          // A failed write only delays this cleanup to the next listing.
+          await save(value).catch(() => {});
+        }
         const rows: Row[] = [];
-        for (const [id, presence] of membership(value)) {
+        for (const [id, presence] of open) {
           const runtime = runtimes.get(id) ?? missing(id);
           rows.push({
             runtime,
