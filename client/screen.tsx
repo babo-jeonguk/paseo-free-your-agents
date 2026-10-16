@@ -2,11 +2,11 @@ import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { useRpc } from "@getpaseo/plugin/client";
 import { Icon, Modal, ScrollView, TextInput } from "@getpaseo/plugin/client/react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { memo, useCallback, useEffect, useMemo, useReducer } from "react";
+import { memo, useCallback, useEffect, useMemo, useReducer, useRef, type Ref } from "react";
 import { ActivityIndicator, Platform, Pressable, Text, View } from "react-native";
 import type { Row } from "../shared/model";
 import { HoursSchema } from "../shared/model";
-import { changeStopRpc, listRpc, setupStatusRpc, setupChangeRpc } from "../shared/rpc";
+import { changeStopRpc, listRpc } from "../shared/rpc";
 import {
   controlNote,
   filters,
@@ -22,7 +22,7 @@ import {
 } from "./filter";
 
 type Theme = PluginScreenProps["theme"];
-type Dialog = { kind: "menu" | "schedule" | "stop"; row: Row } | null;
+type Dialog = { kind: "menu" | "stop"; row: Row } | null;
 interface ViewState {
   query: string;
   selected: Filter[];
@@ -53,7 +53,18 @@ function reducer(state: ViewState, action: Action): ViewState {
       return { ...state, selected };
     }
     case "dialog":
-      return { ...state, dialog: action.value, hours: "1", error: null };
+      return {
+        ...state,
+        dialog: action.value,
+        hours:
+          action.value &&
+          state.dialog &&
+          action.value.row.runtime.agentId === state.dialog.row.runtime.agentId
+            ? state.hours
+            : "1",
+        error: null,
+        now: Date.now(),
+      };
     case "hours":
       return { ...state, hours: action.value, error: null };
     case "error":
@@ -81,14 +92,22 @@ function createStyles(theme: Theme, compact: boolean) {
     muted: { fontSize: 13, color: c.foregroundMuted, lineHeight: 20 },
     text: { fontSize: 14, color: c.foreground, lineHeight: 20 },
     strong: { fontSize: 14, color: c.foreground, fontWeight: "600" as const },
-    line: { flexDirection: "row" as const, alignItems: "center" as const, gap: 10 },
+    line: {
+      flexDirection: "row" as const,
+      alignItems: "center" as const,
+      gap: 10,
+    },
     header: {
       flexDirection: "row" as const,
       alignItems: "center" as const,
       justifyContent: "space-between" as const,
       gap: 12,
     },
-    summary: { flexDirection: "row" as const, flexWrap: "wrap" as const, gap: 10 },
+    summary: {
+      flexDirection: "row" as const,
+      flexWrap: "wrap" as const,
+      gap: 10,
+    },
     metric: {
       flexGrow: 1,
       flexBasis: compact ? ("45%" as const) : ("20%" as const),
@@ -198,7 +217,21 @@ function createStyles(theme: Theme, compact: boolean) {
       alignItems: "center" as const,
     },
     primary: { backgroundColor: c.foreground },
-    primaryText: { color: c.surface0, fontSize: 14, fontWeight: "600" as const },
+    primaryText: {
+      color: c.surface0,
+      fontSize: 14,
+      fontWeight: "600" as const,
+    },
+    dangerButton: { borderColor: c.statusDanger },
+    dangerPrimary: {
+      backgroundColor: c.statusDanger,
+      borderColor: c.statusDanger,
+    },
+    dangerPrimaryText: {
+      color: c.surface0,
+      fontSize: 14,
+      fontWeight: "600" as const,
+    },
     danger: { color: c.statusDanger, fontSize: 14, lineHeight: 20 },
     banner: {
       padding: 14,
@@ -209,7 +242,83 @@ function createStyles(theme: Theme, compact: boolean) {
       backgroundColor: c.surface1,
     },
     empty: { padding: 40, alignItems: "center" as const, gap: 10 },
-    actions: { gap: 8 },
+    controlButton: {
+      minHeight: 44,
+      flexDirection: "row" as const,
+      alignItems: "center" as const,
+      gap: 7,
+      paddingHorizontal: 12,
+      borderWidth: 1,
+      borderColor: c.border,
+      borderRadius: 7,
+      backgroundColor: c.surface1,
+    },
+    actions: { gap: 20 },
+    identity: {
+      padding: 16,
+      gap: 10,
+      borderRadius: 10,
+      backgroundColor: c.surface2,
+    },
+    dialogTitle: {
+      fontSize: 17,
+      lineHeight: 24,
+      fontWeight: "600" as const,
+      color: c.foreground,
+    },
+    section: { gap: 12 },
+    badge: {
+      borderRadius: 5,
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      backgroundColor: c.surface1,
+    },
+    scheduleStatus: {
+      padding: 14,
+      gap: 10,
+      borderRadius: 8,
+      borderColor: c.border,
+      borderWidth: 1,
+    },
+    presets: {
+      flexDirection: "row" as const,
+      flexWrap: "wrap" as const,
+      gap: 4,
+    },
+    preset: {
+      minHeight: 44,
+      flexGrow: 1,
+      flexBasis: "17%" as const,
+      paddingHorizontal: 4,
+      alignItems: "center" as const,
+      justifyContent: "center" as const,
+      borderRadius: 7,
+      borderWidth: 1,
+      borderColor: c.border,
+      backgroundColor: c.surface1,
+    },
+    presetSelected: {
+      backgroundColor: c.foreground,
+      borderColor: c.foreground,
+    },
+    duration: {
+      minHeight: 44,
+      width: 88,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      borderWidth: 1,
+      borderColor: c.border,
+      borderRadius: 7,
+      color: c.foreground,
+      backgroundColor: c.surface1,
+      fontSize: 14,
+    },
+    divider: {
+      borderTopWidth: 1,
+      borderColor: c.border,
+      paddingTop: 20,
+      gap: 12,
+    },
     footer: {
       flexDirection: "row" as const,
       justifyContent: "flex-end" as const,
@@ -226,15 +335,20 @@ function ControlButton({
   styles,
   disabled = false,
   primary = false,
+  danger = false,
+  buttonRef,
 }: {
   label: string;
   onPress(): void;
   styles: Styles;
   disabled?: boolean;
   primary?: boolean;
+  danger?: boolean;
+  buttonRef?: Ref<View>;
 }) {
   return (
     <Pressable
+      ref={buttonRef}
       accessibilityRole="button"
       accessibilityLabel={label}
       accessibilityState={{ disabled }}
@@ -243,11 +357,25 @@ function ControlButton({
       style={({ pressed }) => [
         styles.button,
         primary && styles.primary,
+        danger && styles.dangerButton,
+        danger && primary && styles.dangerPrimary,
         pressed && !primary && styles.pressed,
         disabled && styles.disabled,
       ]}
     >
-      <Text style={primary ? styles.primaryText : styles.text}>{label}</Text>
+      <Text
+        style={
+          danger
+            ? primary
+              ? styles.dangerPrimaryText
+              : styles.danger
+            : primary
+            ? styles.primaryText
+            : styles.text
+        }
+      >
+        {label}
+      </Text>
     </Pressable>
   );
 }
@@ -260,6 +388,14 @@ function stopLabel(row: Row, now: number): string {
   if (remaining === 0) return "Stop due";
   if (remaining < 60) return `Stop in ${remaining} min`;
   return `Stop in ${Math.ceil(remaining / 60)} hours`;
+}
+function stopTime(timestamp: number): string {
+  return new Date(timestamp).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 // Polling replaces only changed rows (React Query structural sharing), so memoized
 // rows with stable callbacks skip re-rendering unchanged conversations.
@@ -318,12 +454,10 @@ const ConversationRow = memo(function ConversationRow({
         <Text style={styles.text}>{memoryLabel(runtime.memoryBytes)}</Text>
       </View>
       <View style={styles.control}>
-        <View style={{ flex: 1, gap: 4 }}>
+        <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
           {compact && <Text style={styles.muted}>Process control</Text>}
           <Text style={styles.text}>{stopLabel(row, now)}</Text>
-          {row.stop && (
-            <Text style={styles.muted}>{new Date(row.stop.dueAt).toLocaleString()}</Text>
-          )}
+          {row.stop && <Text style={styles.muted}>{stopTime(row.stop.dueAt)}</Text>}
           {row.stop?.error && <Text style={styles.danger}>{row.stop.error}</Text>}
           {runtime.unavailableReason && runtime.presence !== "absent" && (
             <Text style={styles.muted}>{runtime.unavailableReason}</Text>
@@ -332,10 +466,12 @@ const ConversationRow = memo(function ConversationRow({
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`Process controls: ${runtime.title}`}
+          accessibilityHint="Schedule a process stop or stop it now."
           onPress={() => menu(row)}
-          style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
+          style={({ pressed }) => [styles.controlButton, pressed && styles.pressed]}
         >
-          <Icon name="Ellipsis" size={18} color={theme.colors.foregroundMuted} />
+          <Icon name="SlidersHorizontal" size={16} color={theme.colors.foreground} />
+          <Text style={styles.strong}>Control</Text>
         </Pressable>
       </View>
     </View>
@@ -361,34 +497,13 @@ export function RuntimeScreen({
   });
   const list = useRpc(listRpc);
   const change = useRpc(changeStopRpc);
-  const setupStatus = useRpc(setupStatusRpc),
-    setupChange = useRpc(setupChangeRpc);
   const queryClient = useQueryClient();
   const queryKey = useMemo(() => ["runtime-control", "inventory", host.id], [host.id]);
-  const query = useQuery({ queryKey, queryFn: () => list({}), refetchInterval: 5_000, retry: 1 });
-  const setupKey = ["runtime-control", "setup", host.id];
-  const setup = useQuery({
-    queryKey: setupKey,
-    queryFn: () => setupStatus({}),
-    refetchInterval: 15000,
+  const query = useQuery({
+    queryKey,
+    queryFn: () => list({}),
+    refetchInterval: 5_000,
     retry: 1,
-  });
-  const setupMutation = useMutation({
-    mutationFn: async (input: Parameters<typeof setupChange>[0]) => {
-      const result = await setupChange(input);
-      queryClient.setQueryData(setupKey, result);
-      const state = result.providers.find((row) => row.provider === input.provider)?.state;
-      if (
-        state !== (input.action === "enable" ? "installed" : "restored") &&
-        state !== "not-installed"
-      )
-        throw new Error(
-          "The command settings need reconciliation. Your existing work has been kept.",
-        );
-    },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey });
-    },
   });
   useEffect(() => {
     const timer = setInterval(() => dispatch({ type: "clock", value: Date.now() }), 15_000);
@@ -409,7 +524,10 @@ export function RuntimeScreen({
       dispatch({ type: "success", value: notice });
     },
     onError: (error) =>
-      dispatch({ type: "error", value: error instanceof Error ? error.message : String(error) }),
+      dispatch({
+        type: "error",
+        value: error instanceof Error ? error.message : String(error),
+      }),
   });
   const rows = query.data?.rows ?? [];
   const shown = visible(rows, view.selected, view.query);
@@ -427,6 +545,13 @@ export function RuntimeScreen({
     count("Open conversations", rows.length),
   ];
   const dialog = view.dialog;
+  const presetRef = useRef<View>(null);
+  const backRef = useRef<View>(null);
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+    if (dialog?.kind === "stop") backRef.current?.focus();
+    else if (dialog?.kind === "menu") presetRef.current?.focus();
+  }, [dialog?.kind, dialog?.row.runtime.agentId]);
   const currentRow = dialog
     ? rows.find((row) => row.runtime.agentId === dialog.row.runtime.agentId)
     : null;
@@ -435,11 +560,18 @@ export function RuntimeScreen({
     query.data?.supported === true &&
     currentRow?.runtime.releasable === true &&
     currentRow.runtime.presence === "running";
+  const panelRow = currentRow ?? dialog?.row;
+  const hasPendingStop = currentRow ? pendingStop(currentRow) : false;
+  const canCancel = hasPendingStop && currentRow?.stop?.state !== "stopping";
+  const working = currentRow?.runtime.activity !== "idle";
   const validHours = HoursSchema.safeParse(Number(view.hours));
   function submit(action: "now" | "schedule" | "cancel") {
     if (!dialog) return;
     if (action === "schedule" && !validHours.success) {
-      dispatch({ type: "error", value: "Enter a duration from 0.25 to 168 hours." });
+      dispatch({
+        type: "error",
+        value: "Enter a duration from 0.25 to 168 hours.",
+      });
       return;
     }
     const row = dialog.row;
@@ -463,24 +595,26 @@ export function RuntimeScreen({
             navigation.openAgent({ agentId });
           }
         : undefined,
-    [navigation],
+    [navigation]
   );
   const menu = useCallback(
     (row: Row) => dispatch({ type: "dialog", value: { kind: "menu", row } }),
-    [],
+    []
   );
   function moveFilter(event: {
     key: string;
     preventDefault(): void;
     currentTarget: {
-      parentElement: { querySelectorAll(selector: string): NodeListOf<HTMLElement> } | null;
+      parentElement: {
+        querySelectorAll(selector: string): NodeListOf<HTMLElement>;
+      } | null;
     };
   }) {
     if (Platform.OS !== "web") return;
     const keys = ["ArrowLeft", "ArrowRight", "Home", "End"];
     if (!keys.includes(event.key)) return;
     const buttons = Array.from(
-      event.currentTarget.parentElement?.querySelectorAll("[role=button]") ?? [],
+      event.currentTarget.parentElement?.querySelectorAll("[role=button]") ?? []
     );
     const index = buttons.findIndex((button) => button === event.currentTarget);
     let next = index;
@@ -533,78 +667,6 @@ export function RuntimeScreen({
             {query.data && !query.data.supported && (
               <Text style={styles.muted}>{query.data.reason}</Text>
             )}
-          </View>
-        )}
-        {!setup.data?.official && (
-          <View style={styles.banner}>
-            <Text style={styles.strong}>Process controls</Text>
-            <Text style={styles.muted}>
-              Enable controls for new conversations. Existing conversations apply after the next
-              Paseo daemon restart. Your current work will keep running.
-            </Text>
-            {setup.isPending && (
-              <ActivityIndicator accessibilityLabel="Loading process control setup" />
-            )}
-            {(setup.isError || setupMutation.isError) && (
-              <Text accessibilityRole="alert" style={styles.danger}>
-                {setupMutation.error?.message ?? setup.error?.message}
-              </Text>
-            )}
-            {setup.data && !setup.data.supported && (
-              <Text style={styles.muted}>Process controls currently require Linux.</Text>
-            )}
-            {setup.data?.providers.map((provider) => {
-              const enabled = provider.state === "installed",
-                changed = provider.state === "changed";
-              const name = provider.provider === "codex" ? "Codex" : "Claude";
-              return (
-                <View key={provider.provider} style={[styles.line, { flexWrap: "wrap" }]}>
-                  <Text style={styles.strong}>{name}</Text>
-                  <Text style={[styles.muted, { flex: 1 }]}>
-                    {changed
-                      ? "Command changed elsewhere; your setting is preserved."
-                      : enabled
-                      ? "Enabled for new conversations"
-                      : provider.state === "pending"
-                      ? "Setup needs reconciliation"
-                      : "Not enabled"}
-                  </Text>
-                  {!changed && (
-                    <ControlButton
-                      label={enabled ? `Restore ${name} command` : `Enable ${name}`}
-                      styles={styles}
-                      disabled={setupMutation.isPending}
-                      onPress={() =>
-                        setupMutation.mutate({
-                          provider: provider.provider,
-                          action: enabled ? "restore" : "enable",
-                        })
-                      }
-                    />
-                  )}
-                  {provider.state === "pending" && (
-                    <ControlButton
-                      label={`Restore ${name} command`}
-                      styles={styles}
-                      disabled={setupMutation.isPending}
-                      onPress={() =>
-                        setupMutation.mutate({ provider: provider.provider, action: "restore" })
-                      }
-                    />
-                  )}
-                </View>
-              );
-            })}
-            {setup.data?.providers.some(
-              (provider) => provider.explicitDefaultOnRestore && provider.state === "installed",
-            ) && (
-              <Text style={styles.muted}>
-                Restoring a default leaves an explicit CLI command in Paseo settings.
-              </Text>
-            )}
-            <Text style={styles.muted}>
-              Restore commands here before uninstalling. Conversations and tabs stay available.
-            </Text>
           </View>
         )}
         {view.notice && (
@@ -662,9 +724,11 @@ export function RuntimeScreen({
                     accessibilityRole="button"
                     aria-pressed={pressed}
                     accessibilityLabel={filter.label}
-                    accessibilityHint={filter.id === "all"
-                      ? "Clear category selections and keep search."
-                      : filter.description}
+                    accessibilityHint={
+                      filter.id === "all"
+                        ? "Clear category selections and keep search."
+                        : filter.description
+                    }
                     onPress={() => dispatch({ type: "filter", value: filter.id })}
                     {...(Platform.OS === "web" ? { onKeyDown: moveFilter } : {})}
                     style={[styles.filter, pressed && styles.selected]}
@@ -747,142 +811,250 @@ export function RuntimeScreen({
       </ScrollView>
       <Modal
         open={dialog !== null}
-        title={
-          dialog?.kind === "schedule"
-            ? "Schedule process stop"
-            : dialog?.kind === "stop"
-            ? "Stop process"
-            : "Process control"
-        }
+        title={dialog?.kind === "stop" ? "Stop process" : "Process control"}
+        icon={<Icon name="SlidersHorizontal" size={18} color={theme.colors.foregroundMuted} />}
         onOpenChange={(isOpen) => {
-          if (!isOpen) close();
+          if (!isOpen && !mutation.isPending) {
+            if (dialog?.kind === "stop")
+              dispatch({ type: "dialog", value: { ...dialog, kind: "menu" } });
+            else close();
+          }
         }}
       >
         <Modal.Content>
-          {dialog && (
+          {dialog && panelRow && (
             <View style={styles.actions}>
-              <Text style={styles.strong}>{dialog.row.runtime.title}</Text>
+              <View style={styles.identity}>
+                <Text style={styles.dialogTitle}>{panelRow.runtime.title}</Text>
+                <Text style={styles.muted}>
+                  {providerLabel(panelRow.runtime.provider)} ·{" "}
+                  {panelRow.runtime.workspace || "Workspace unavailable"}
+                </Text>
+                <View style={[styles.line, { flexWrap: "wrap" }]}>
+                  <View style={styles.badge}>
+                    <Text style={styles.strong}>{statusLabel(panelRow)}</Text>
+                  </View>
+                  <Text style={styles.muted}>
+                    Memory · {memoryLabel(panelRow.runtime.memoryBytes)}
+                  </Text>
+                </View>
+              </View>
               {dialog.kind === "menu" && (
                 <>
-                  <ControlButton
-                    label="Stop process in…"
-                    styles={styles}
-                    disabled={!canStop || mutation.isPending}
-                    onPress={() =>
-                      dispatch({ type: "dialog", value: { ...dialog, kind: "schedule" } })
-                    }
-                  />
-                  <ControlButton
-                    label="Cancel scheduled stop"
-                    styles={styles}
-                    disabled={
-                      !currentRow?.stop ||
-                      currentRow.stop.state === "stopping" ||
-                      currentRow.stop.state === "failed" ||
-                      mutation.isPending
-                    }
-                    onPress={() => submit("cancel")}
-                  />
-                  <ControlButton
-                    label="Stop process now"
-                    styles={styles}
-                    disabled={!canStop || mutation.isPending}
-                    onPress={() => dispatch({ type: "dialog", value: { ...dialog, kind: "stop" } })}
-                  />
-                  {!canStop && (
-                    <Text style={styles.muted}>
-                      {currentRow?.runtime.unavailableReason ??
-                        "This conversation has no process to stop."}
+                  {hasPendingStop && currentRow?.stop && (
+                    <View style={styles.scheduleStatus}>
+                      <View style={styles.line}>
+                        <Icon name="Clock3" size={17} color={theme.colors.accent} />
+                        <Text style={styles.strong}>{stopLabel(currentRow, view.now)}</Text>
+                      </View>
+                      <Text style={styles.muted}>{stopTime(currentRow.stop.dueAt)}</Text>
+                      {canCancel && (
+                        <ControlButton
+                          label={
+                            mutation.isPending && mutation.variables?.action === "cancel"
+                              ? "Cancelling…"
+                              : "Cancel scheduled stop"
+                          }
+                          styles={styles}
+                          disabled={mutation.isPending}
+                          onPress={() => submit("cancel")}
+                        />
+                      )}
+                    </View>
+                  )}
+                  {canStop ? (
+                    <View style={styles.section}>
+                      <View style={styles.line}>
+                        <Icon name="Clock3" size={18} color={theme.colors.foregroundMuted} />
+                        <Text style={styles.strong}>
+                          {hasPendingStop ? "Reschedule stop" : "Schedule a stop"}
+                        </Text>
+                      </View>
+                      <Text style={styles.muted}>
+                        Free memory later. Active work finishes first.
+                      </Text>
+                      <View style={styles.presets}>
+                        {[
+                          { label: "30 min", value: "0.5" },
+                          { label: "1 hour", value: "1" },
+                          { label: "2 hours", value: "2" },
+                          { label: "4 hours", value: "4" },
+                          { label: "8 hours", value: "8" },
+                        ].map((preset) => {
+                          const selected = Number(view.hours) === Number(preset.value);
+                          return (
+                            <Pressable
+                              key={preset.value}
+                              ref={preset.value === "1" ? presetRef : undefined}
+                              accessibilityRole="button"
+                              accessibilityLabel={preset.label}
+                              accessibilityState={{
+                                disabled: mutation.isPending,
+                                ...(Platform.OS !== "web" ? { selected } : {}),
+                              }}
+                              aria-pressed={selected}
+                              disabled={mutation.isPending}
+                              onPress={() => dispatch({ type: "hours", value: preset.value })}
+                              style={({ pressed }) => [
+                                styles.preset,
+                                selected && styles.presetSelected,
+                                pressed && !selected && styles.pressed,
+                                mutation.isPending && styles.disabled,
+                              ]}
+                            >
+                              <Text
+                                style={[
+                                  selected ? styles.primaryText : styles.text,
+                                  { fontSize: 13 },
+                                ]}
+                              >
+                                {preset.label}
+                              </Text>
+                            </Pressable>
+                          );
+                        })}
+                      </View>
+                      <View style={[styles.line, { flexWrap: "wrap" }]}>
+                        <Text style={styles.text}>Stop after</Text>
+                        <TextInput
+                          accessibilityLabel="Stop after (hours)"
+                          accessibilityHint="Enter a duration from 0.25 to 168 hours."
+                          value={view.hours}
+                          onChangeText={(value) => dispatch({ type: "hours", value })}
+                          keyboardType="decimal-pad"
+                          editable={!mutation.isPending}
+                          selectTextOnFocus
+                          style={styles.duration}
+                        />
+                        <Text style={styles.muted}>hours</Text>
+                      </View>
+                      {validHours.success && (
+                        <Text style={styles.muted}>
+                          Earliest stop: {stopTime(view.now + validHours.data * 3_600_000)}
+                        </Text>
+                      )}
+                      {view.error && (
+                        <Text style={styles.danger} accessibilityRole="alert">
+                          {view.error}
+                        </Text>
+                      )}
+                      <ControlButton
+                        label={
+                          mutation.isPending && mutation.variables?.action === "schedule"
+                            ? "Scheduling…"
+                            : hasPendingStop
+                            ? "Update schedule"
+                            : "Schedule stop"
+                        }
+                        styles={styles}
+                        primary
+                        disabled={mutation.isPending}
+                        onPress={() => submit("schedule")}
+                      />
+                    </View>
+                  ) : (
+                    <View style={styles.section}>
+                      <Text style={styles.strong}>
+                        {currentRow?.stop?.state === "stopping"
+                          ? "Stopping process…"
+                          : "Process controls unavailable"}
+                      </Text>
+                      <Text style={styles.muted}>
+                        {!currentRow
+                          ? "This conversation is no longer in the open tabs list."
+                          : query.data?.supported === false
+                          ? query.data.reason
+                          : currentRow.stop?.state === "stopping"
+                          ? "Waiting for the process to exit."
+                          : currentRow.runtime.unavailableReason ??
+                            "This conversation has no process to stop."}
+                      </Text>
+                      {view.error && (
+                        <Text style={styles.danger} accessibilityRole="alert">
+                          {view.error}
+                        </Text>
+                      )}
+                    </View>
+                  )}
+                  {currentRow?.stop?.state === "failed" && (
+                    <Text style={styles.danger} accessibilityRole="alert">
+                      {currentRow.stop.error ?? "The previous stop failed. Try again."}
                     </Text>
                   )}
-                </>
-              )}
-              {dialog.kind === "schedule" && (
-                <>
-                  <Text style={styles.text}>Stop in hours</Text>
-                  <TextInput
-                    accessibilityLabel="Stop in hours"
-                    value={view.hours}
-                    onChangeText={(value) => dispatch({ type: "hours", value })}
-                    keyboardType="decimal-pad"
-                    selectTextOnFocus
-                    autoFocus
-                    style={styles.search}
-                  />
-                  <View style={[styles.line, { flexWrap: "wrap" }]}>
-                    {[
-                      { label: "30 min", value: "0.5" },
-                      { label: "1 hour", value: "1" },
-                      { label: "2 hours", value: "2" },
-                      { label: "4 hours", value: "4" },
-                      { label: "8 hours", value: "8" },
-                    ].map((preset) => (
+                  {canStop && (
+                    <View style={styles.divider}>
+                      <View style={styles.line}>
+                        <Icon name="Square" size={16} color={theme.colors.statusDanger} />
+                        <Text style={styles.strong}>
+                          {working ? "Stop after active work" : "Free memory now"}
+                        </Text>
+                      </View>
+                      <Text style={styles.muted}>
+                        {working
+                          ? "The process will stop when its current work finishes."
+                          : "Stop the idle process and release its memory."}
+                      </Text>
                       <ControlButton
-                        key={preset.value}
-                        label={preset.label}
+                        label={working ? "Stop when finished…" : "Stop process now"}
                         styles={styles}
-                        onPress={() => dispatch({ type: "hours", value: preset.value })}
+                        danger
                         disabled={mutation.isPending}
+                        onPress={() =>
+                          dispatch({
+                            type: "dialog",
+                            value: { ...dialog, kind: "stop" },
+                          })
+                        }
                       />
-                    ))}
-                  </View>
-                  {validHours.success && (
-                    <Text style={styles.muted}>
-                      Scheduled for{" "}
-                      {new Date(view.now + validHours.data * 3_600_000).toLocaleString()}
-                    </Text>
+                    </View>
                   )}
                   <Text style={styles.muted}>
-                    If the agent is still working, the stop waits until its work finishes. Your
-                    conversation and tab stay available.
+                    Your conversation and tab stay open. Send a message to resume.
                   </Text>
                 </>
               )}
               {dialog.kind === "stop" && (
                 <Text style={styles.text}>
-                  Only the process will stop. Active foreground and background work will finish
-                  first. Your conversation and tab stay available. Send another message to resume
+                  Only the process will stop. If work is in progress, the stop request will wait.
+                  Your conversation and tab will remain available. Send another message to resume
                   the agent.
                 </Text>
               )}
-              {view.error && (
+              {dialog.kind === "stop" && view.error && (
                 <Text style={styles.danger} accessibilityRole="alert">
                   {view.error}
                 </Text>
               )}
-              {mutation.isPending && <Text style={styles.muted}>Updating process control…</Text>}
-              <View style={styles.footer}>
-                <ControlButton
-                  label={dialog.kind === "menu" ? "Close" : "Cancel"}
-                  styles={styles}
-                  disabled={mutation.isPending}
-                  onPress={close}
-                />
-                {dialog.kind === "schedule" && (
+              {dialog.kind === "stop" && (
+                <View style={styles.footer}>
                   <ControlButton
-                    label={mutation.isPending ? "Scheduling…" : "Schedule stop"}
+                    label="Back"
+                    buttonRef={backRef}
                     styles={styles}
-                    primary
-                    disabled={mutation.isPending || !canStop}
-                    onPress={() => submit("schedule")}
+                    disabled={mutation.isPending}
+                    onPress={() =>
+                      dispatch({
+                        type: "dialog",
+                        value: { ...dialog, kind: "menu" },
+                      })
+                    }
                   />
-                )}
-                {dialog.kind === "stop" && (
                   <ControlButton
                     label={
                       mutation.isPending
                         ? "Requesting stop…"
-                        : currentRow?.runtime.activity === "idle"
-                        ? "Stop process"
-                        : "Stop when finished"
+                        : working
+                        ? "Stop when finished"
+                        : "Stop process"
                     }
                     styles={styles}
                     primary
+                    danger
                     disabled={mutation.isPending || !canStop}
                     onPress={() => submit("now")}
                   />
-                )}
-              </View>
+                </View>
+              )}
             </View>
           )}
         </Modal.Content>

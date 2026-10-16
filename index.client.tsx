@@ -8,6 +8,7 @@ import { useCallback, useSyncExternalStore } from "react";
 import { View } from "react-native";
 import { z } from "zod";
 import { RuntimeScreen } from "./client/screen";
+import { ProcessSettingsScreen } from "./client/settings";
 import { startReporter, type ReporterRpc } from "./client/reporter";
 import { createPrivateTabs } from "./client/private-tabs";
 import { getWindowOwnerId } from "./client/window-owner";
@@ -88,6 +89,12 @@ export default function contribute(client: PluginClientContext) {
       </View>
     );
   }
+  const stopSettings = client.addSettingsScreen({
+    id: "process-controls",
+    title: "Settings",
+    icon: "MemoryStick",
+    Component: ProcessSettingsScreen,
+  });
   const stopScreen = client.addScreen({
     id: SCREEN_ID,
     title: "Runtime Control",
@@ -114,6 +121,7 @@ export default function contribute(client: PluginClientContext) {
   return async () => {
     for (const stop of reporters) stop();
     for (const source of sources.values()) source.dispose();
+    await stopSettings();
     await stopSidebar();
     await stopScreen();
   };
