@@ -1,10 +1,12 @@
 // Private local control transport for provider CLI bridges.
-// A private Unix socket is separate from provider stdio. No TCP listener, prompt
-// payloads, arbitrary RPC forwarding, file paths, or caller-selected PIDs.
+// A private Unix socket or Windows named pipe is separate from provider stdio.
+// No TCP listener, prompt payloads, arbitrary RPC forwarding, file paths, or
+// caller-selected PIDs.
 import { createServer, createConnection } from "node:net";
 import { timingSafeEqual } from "node:crypto";
 import { lstat, chmod } from "node:fs/promises";
 import { dirname } from "node:path";
+import { isControlPipe, windows } from "../platform.mjs";
 
 function authorized(actual, expected) {
   if (typeof actual !== "string" || actual.length !== expected.length) return false;
@@ -14,17 +16,19 @@ function authorized(actual, expected) {
 }
 
 export async function listenControl({ path, token, handle }) {
-  if (process.platform === "win32")
-    throw new Error("Unix control transport only in this experiment");
   if (!/^[a-f0-9]{64}$/.test(token ?? "")) throw new Error("Missing control capability");
-  const directory = await lstat(dirname(path));
-  if (
-    !directory.isDirectory() ||
-    directory.isSymbolicLink() ||
-    directory.uid !== process.getuid() ||
-    (directory.mode & 0o777) !== 0o700
-  ) {
-    throw new Error("Control directory must be owned by this user with mode 0700");
+  if (windows) {
+    if (!isControlPipe(path)) throw new Error("Control endpoint must be a Runtime Control pipe");
+  } else {
+    const directory = await lstat(dirname(path));
+    if (
+      !directory.isDirectory() ||
+      directory.isSymbolicLink() ||
+      directory.uid !== process.getuid() ||
+      (directory.mode & 0o777) !== 0o700
+    ) {
+      throw new Error("Control directory must be owned by this user with mode 0700");
+    }
   }
   // Do not unlink any preexisting path: a conflicting endpoint is a hard error.
   const sockets = new Set();
@@ -83,7 +87,7 @@ export async function listenControl({ path, token, handle }) {
     server.once("error", reject);
     server.listen(path, resolve);
   });
-  await chmod(path, 0o600);
+  if (!windows) await chmod(path, 0o600);
   return async () => {
     for (const socket of sockets) socket.destroy();
     await new Promise((resolve) => server.close(resolve));

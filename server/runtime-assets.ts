@@ -1,9 +1,10 @@
 import { constants } from "node:fs";
 import { mkdir, open, link, unlink, readFile, rename, rm } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { runtimeAssets } from "./runtime-assets.generated";
 import { assertPrivateDirectory } from "./proxy-control";
+import { ownerOnly, resolveWindowsCommand, windows } from "./platform.mjs";
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
@@ -64,8 +65,7 @@ async function immutable(path: string, contents: string, mode: number) {
     const info = await existing.stat();
     if (
       !info.isFile() ||
-      info.uid !== process.getuid?.() ||
-      (info.mode & 0o777) !== mode ||
+      !ownerOnly(info, mode) ||
       info.size !== Buffer.byteLength(contents) ||
       hash(await existing.readFile("utf8")) !== hash(contents)
     )
@@ -73,6 +73,28 @@ async function immutable(path: string, contents: string, mode: number) {
   } finally {
     await existing.close();
   }
+}
+// The Windows counterpart of the exec shim below, for Codex, which Paseo runs
+// through cmd.exe. Fixed installation paths only; `%` is the one character a
+// quoted batch path must escape.
+function windowsShim(directory: string, runtime: string, bridge: string[]) {
+  const quoted = (value: string) => '"' + value.replaceAll("%", "%%") + '"';
+  return [
+    "@echo off",
+    "setlocal DisableDelayedExpansion",
+    'set "runtime="',
+    `if exist ${quoted(join(directory, "runtime"))} set /p runtime=<${quoted(join(directory, "runtime"))}`,
+    'if defined runtime if not exist "%runtime%" set "runtime="',
+    `if not defined runtime if exist ${quoted(runtime)} set "runtime=${runtime.replaceAll("%", "%%")}"`,
+    'if not defined runtime for %%I in (node.exe) do set "runtime=%%~$PATH:I"',
+    "if not defined runtime (",
+    "  echo Runtime Control: Node.js runtime not found. Restore this provider command in Runtime Control. 1>&2",
+    "  exit /b 127",
+    ")",
+    'set "ELECTRON_RUN_AS_NODE=1"',
+    '"%runtime%" ' + bridge.map(quoted).join(" ") + " %*",
+    "",
+  ].join("\r\n");
 }
 export async function prepareRuntimeCommand(
   directory: string,
@@ -82,8 +104,14 @@ export async function prepareRuntimeCommand(
 ) {
   directory = resolve(directory);
   const command = originalCommand ?? [provider];
-  if (command[0]!.startsWith(directory + "/"))
+  const fold = (value: string) => (windows ? value.toLowerCase() : value);
+  if (command.some((arg) => fold(arg).startsWith(fold(directory + sep))))
     throw new Error("Cannot adopt a Runtime Control command without its original receipt.");
+  // Paseo starts Claude without a shell, which cannot run a command script on
+  // Windows. A bare `node` command makes Paseo start the bridge on its own
+  // runtime instead; version probes still find Node on PATH.
+  if (windows && provider === "claude" && !/\.exe$/i.test(resolveWindowsCommand("node")))
+    throw new Error("Claude process control on Windows needs Node.js on PATH.");
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await assertPrivateDirectory(directory);
   const assets = join(directory, runtimeAssets.version),
@@ -98,10 +126,17 @@ export async function prepareRuntimeCommand(
     await immutable(join(assets, name), contents, 0o600);
   const contents = JSON.stringify({ version: 1, provider, command });
   const id = hash(runtimeAssets.version + SHIM_VERSION + runtime + contents),
-    profile = join(profiles, id + ".json"),
-    launcher = join(profiles, id + ".launch");
+    profile = join(profiles, id + ".json");
   await immutable(profile, contents, 0o600);
   await recordRuntime(directory, runtime);
+  if (windows) {
+    const bridge = ["--expose-gc", join(assets, "launcher.mjs"), profile];
+    if (provider === "claude") return ["node", ...bridge];
+    const launcher = join(profiles, id + ".cmd");
+    await immutable(launcher, windowsShim(directory, runtime, bridge), 0o700);
+    return [launcher];
+  }
+  const launcher = join(profiles, id + ".launch");
   // Only fixed installation paths enter this tiny exec shim. User CLI argv is
   // data in a private JSON file and is spawned without shell interpretation.
   // Paseo strips ELECTRON_RUN_AS_NODE from CLI environments, but a desktop

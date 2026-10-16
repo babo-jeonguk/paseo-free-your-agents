@@ -23,7 +23,7 @@ Runtime Control shows which conversations hold that memory and stops the idle pr
 
 ## Requirements
 
-- **Linux.** Process controls currently work on Linux only. On macOS and Windows the screen opens but reports that controls are unavailable.
+- **Linux or Windows.** Process controls work on Linux and Windows. On macOS the screen opens but reports that controls are unavailable. On Windows, Claude controls need Node.js on `PATH`, because Paseo starts Claude without a shell.
 - **Paseo daemon and app 0.11.2**, with plugins enabled in the daemon configuration.
 - Validated with **Codex 0.162.1** and **Claude 2.1.299**. Other versions keep working normally, but process control stays disabled for them.
 
@@ -54,7 +54,7 @@ New conversations use the controls immediately. Existing conversations keep thei
 
 Unknown native protocols or disabled Claude hooks keep normal messages usable but disable process control. Web tab reporting is verified with the stock production app. The read-only React/Fabric layout adapter is private and version-dependent; iOS/Android device validation is still required. When discovery fails, it preserves uncertainty instead of reporting an empty tab list.
 
-Memory shows the PSS of each conversation's native process and its child processes where available, with RSS estimates otherwise. The lightweight bridge, about 15 MB per conversation, stays running after a stop and is not included. Native full-JSON parsing can create temporary peaks; the standalone bridge collects released history allocations after stopping, without changing daemon/app GC settings.
+Memory shows the PSS of each conversation's native process and its child processes where available, with RSS estimates otherwise. On Windows it shows the process tree's working set. The lightweight bridge, about 15 MB per conversation, stays running after a stop and is not included. Native full-JSON parsing can create temporary peaks; the standalone bridge collects released history allocations after stopping, without changing daemon/app GC settings.
 
 Long Codex history is replayed from private encrypted temporary files: memory-only AES-256-GCM keys, authenticated chunks and a complete manifest. Defaults are 256 MiB per artifact and 512 MiB per bridge. Storage/verification failure keeps native running. Resume/normal exit remove owned files; a later launch conservatively removes proven-dead owners' encrypted files. Uncertain or replaced files are preserved. This isolates OS users; it does not defend against malicious code already running as your OS user.
 

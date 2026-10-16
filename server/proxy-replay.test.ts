@@ -19,6 +19,9 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createEncryptedReplay, encodeJson, ReplayInterrupted } from "./proxy-replay.mjs";
 
+// Windows has no owner-only mode bits, and symlinks need extra privileges there.
+const posix = process.platform !== "win32";
+
 async function setup(t: { after(fn: () => Promise<void>): void }, options = {}) {
   const parentDirectory = await mkdtemp(join(tmpdir(), "rc-replay-test-"));
   const store = await createEncryptedReplay({ parentDirectory, ...options });
@@ -54,8 +57,10 @@ test("encrypted replay supports history above the old RAM limit with bounded aut
   };
   assert.equal(await store.capture("generation:root", encodeJson(history)), true);
   const path = await file();
-  assert.equal((await stat(store.directory)).mode & 0o777, 0o700);
-  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  if (posix) {
+    assert.equal((await stat(store.directory)).mode & 0o777, 0o700);
+    assert.equal((await stat(path)).mode & 0o777, 0o600);
+  }
   const disk = await readFile(path);
   assert.ok(disk.length > 8 * 1024 * 1024);
   assert.equal(disk.includes(Buffer.from(marker)), false, "No plaintext transcript copy at rest");
@@ -140,7 +145,7 @@ test("quotas and interrupted capture never publish partial or stale successful r
   assert.equal(store.stats().bytes, 0);
 });
 
-test("unsafe permissions and symlink replacement cannot leak or delete another file", async (t) => {
+test("unsafe permissions and symlink replacement cannot leak or delete another file", { skip: !posix }, async (t) => {
   const { store, file, parentDirectory } = await setup(t);
   assert.equal(await store.capture("root", encodeJson({ text: "fixture" })), true);
   const path = await file();

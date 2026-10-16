@@ -23,15 +23,17 @@ function fixture(changeBirth = false, failure?: string) {
     },
   };
 }
-test("memory observation tolerates a helper exiting during tree traversal", async () => {
-  assert.deepEqual(await createMemorySampler(fixture())(1), {
+// /proc observation is Linux-only.
+const linux = { skip: process.platform !== "linux" };
+test("memory observation tolerates a helper exiting during tree traversal", linux, async () => {
+  assert.deepEqual(await createMemorySampler(fixture(), false)(1), {
     nativeMemoryBytes: 80 * 1024,
     nativeMemoryKind: "pss",
   });
 });
-test("memory observation preserves unknown on access failure or root replacement", async () => {
+test("memory observation preserves unknown on access failure or root replacement", linux, async () => {
   for (const io of [fixture(false, "EACCES"), fixture(true)]) {
-    assert.equal((await createMemorySampler(io)(1)).nativeMemoryBytes, null);
+    assert.equal((await createMemorySampler(io, false)(1)).nativeMemoryBytes, null);
   }
 });
 test("released runtimes have zero memory without consulting proc", async () => {
@@ -39,4 +41,8 @@ test("released runtimes have zero memory without consulting proc", async () => {
     nativeMemoryBytes: 0,
     nativeMemoryKind: "pss",
   });
+});
+test("a Windows bridge leaves native memory to the plugin's process table", async () => {
+  assert.equal((await createMemorySampler(fixture(), true)(1)).nativeMemoryBytes, null);
+  assert.equal((await createMemorySampler(fixture(), true)()).nativeMemoryBytes, 0);
 });

@@ -7,7 +7,10 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { prepareRuntimeCommand, recordRuntime } from "./runtime-assets";
 
-test("materialized launcher keeps original argv, delegates version/history, and strips private capabilities", async (t) => {
+const windows = process.platform === "win32";
+const posix = { skip: windows };
+
+test("materialized launcher keeps original argv, delegates version/history, and strips private capabilities", posix, async (t) => {
   const root = await mkdtemp(join(tmpdir(), "runtime-assets-test-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const peer = join(root, "native.mjs"),
@@ -47,7 +50,7 @@ test("materialized launcher keeps original argv, delegates version/history, and 
   assert.equal(await readFile(launcher!, "utf8"), "changed by another owner");
 });
 
-test("launcher starts an Electron daemon runtime as Node and survives a moved runtime", async (t) => {
+test("launcher starts an Electron daemon runtime as Node and survives a moved runtime", posix, async (t) => {
   const root = await mkdtemp(join(tmpdir(), "runtime-assets-electron-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const peer = join(root, "native.mjs");
@@ -89,4 +92,98 @@ test("launcher starts an Electron daemon runtime as Node and survives a moved ru
     return true;
   });
   assert.equal(dirname(launcher!).startsWith(launchers), true);
+});
+
+const peerSource = `if(process.argv.includes("--version"))process.stdout.write("codex 0.162.1\\n");else process.stdout.write(JSON.stringify({argv:process.argv.slice(2),privateRecipe:process.env.RUNTIME_PROXY_RECIPE_FILE ?? null,electron:process.env.ELECTRON_RUN_AS_NODE ?? null,keep:process.env.FIXTURE_KEEP ?? null}));`;
+// Like Paseo on Windows: a command script runs through cmd.exe.
+const runScript = (script: string, args: string[], env: NodeJS.ProcessEnv = process.env) =>
+  promisify(execFile)(
+    process.env.ComSpec ?? "cmd.exe",
+    ["/d", "/s", "/c", `""${script}" ${args.join(" ")}"`],
+    { env, windowsVerbatimArguments: true },
+  );
+
+test("Windows Codex launcher is a command script that keeps original argv data", { skip: !windows }, async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "runtime-assets-windows-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const peer = join(root, "native.mjs"),
+    danger = join(root, "must-not-exist");
+  await writeFile(peer, peerSource);
+  const native = [process.execPath, peer, "a & type nul > " + danger, "100%PATH%", 'q"uote', "x y"];
+  const [launcher] = await prepareRuntimeCommand(join(root, "launchers"), "codex", native);
+  assert.match(launcher!, /\.cmd$/);
+  assert.match((await runScript(launcher!, ["--version"])).stdout, /codex 0.162.1/);
+  const result = JSON.parse(
+    (
+      await runScript(launcher!, ["history"], {
+        ...process.env,
+        FIXTURE_KEEP: "kept",
+        RUNTIME_PROXY_RECIPE_FILE: "not-an-interactive-recipe",
+      })
+    ).stdout,
+  );
+  assert.deepEqual(result.argv, [...native.slice(2), "history"]);
+  assert.equal(result.keep, "kept");
+  assert.equal(result.privateRecipe, null);
+  assert.equal(result.electron, null, "The shim's Electron switch never reaches the CLI");
+  await assert.rejects(stat(danger), { code: "ENOENT" });
+  assert.equal((await readFile(launcher!, "utf8")).includes("type nul"), false);
+  assert.deepEqual(await prepareRuntimeCommand(join(root, "launchers"), "codex", native), [launcher]);
+  await writeFile(launcher!, "changed by another owner");
+  await assert.rejects(prepareRuntimeCommand(join(root, "launchers"), "codex", native), /changed/);
+});
+
+test("Windows launcher follows a moved runtime, then Node on PATH", { skip: !windows }, async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "runtime-assets-windows-runtime-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const peer = join(root, "native.mjs");
+  await writeFile(peer, peerSource);
+  const launchers = join(root, "launchers"),
+    missing = join(root, "missing 100%", "Paseo.exe");
+  const [launcher] = await prepareRuntimeCommand(
+    launchers,
+    "codex",
+    [process.execPath, peer],
+    missing,
+  );
+  const run = async (env: NodeJS.ProcessEnv = process.env) =>
+    JSON.parse((await runScript(launcher!, ["history"], env)).stdout);
+  // Neither the pointer nor the recorded runtime exists: Node on PATH runs it.
+  assert.deepEqual((await run()).argv, ["history"]);
+  await recordRuntime(launchers, process.execPath);
+  const isolated = { SystemRoot: process.env.SystemRoot, PATH: join(root, "empty") };
+  assert.deepEqual((await run(isolated)).argv, ["history"]);
+  await recordRuntime(launchers, missing);
+  await assert.rejects(run(isolated), (error: { code?: number; stderr?: string }) => {
+    assert.equal(error.code, 127);
+    assert.match(error.stderr ?? "", /Node\.js runtime not found/);
+    return true;
+  });
+});
+
+test("Windows Claude command is a bare node argv that Paseo starts on its own runtime", { skip: !windows }, async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "runtime-assets-windows-claude-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const peer = join(root, "native.mjs");
+  await writeFile(peer, peerSource);
+  const command = await prepareRuntimeCommand(join(root, "launchers"), "claude", [
+    process.execPath,
+    peer,
+  ]);
+  assert.equal(command[0], "node");
+  assert.equal(command[1], "--expose-gc");
+  // Paseo replaces a bare `node` with its own runtime and sets Electron's switch.
+  const { stdout } = await promisify(execFile)(process.execPath, [...command.slice(1), "history"], {
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+  });
+  assert.deepEqual(JSON.parse(stdout), {
+    argv: ["history"],
+    privateRecipe: null,
+    electron: null,
+    keep: null,
+  });
+  await assert.rejects(
+    prepareRuntimeCommand(join(root, "launchers"), "claude", command),
+    /original receipt/,
+  );
 });

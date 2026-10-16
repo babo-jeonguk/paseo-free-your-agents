@@ -12,6 +12,7 @@ import { createReplyCache } from "../proxy-cache.mjs";
 import { pumpJsonLines, writeJsonLine, writeProtocolBytes } from "../proxy-wire.mjs";
 import { createProtocolTracker } from "../proxy-tracker.mjs";
 import { createMemorySampler, reclaimReleasedMemory } from "./memory.mjs";
+import { nativeCommand, signalNative } from "../platform.mjs";
 const sampleMemory = createMemorySampler();
 
 const [binary, ...originalArgs] = process.argv.slice(2);
@@ -223,10 +224,11 @@ async function launch(resume = false) {
               !["NODE_CHANNEL_FD", "NODE_CHANNEL_SERIALIZATION_MODE"].includes(name),
           ),
         );
-  const current = spawn(binary, args, {
+  const native = nativeCommand(binary, args, nativeEnv);
+  const current = spawn(native.file, native.args, {
+    ...native.options,
     env: nativeEnv,
     stdio: ["pipe", "pipe", "pipe"],
-    detached: true,
   });
   child = current;
   generation = randomUUID();
@@ -275,13 +277,7 @@ async function stopNative() {
   if (!current) return;
   if (current.exitCode === null && current.signalCode === null) {
     const exited = once(current, "exit");
-    const signal = (name) => {
-      try {
-        process.kill(-current.pid, name);
-      } catch (error) {
-        if (error.code !== "ESRCH") throw error;
-      }
-    };
+    const signal = (name) => signalNative(current, name);
     current.stdin.end();
     const graceful = setTimeout(() => signal("SIGTERM"), 2000);
     const force = setTimeout(() => signal("SIGKILL"), 4000);

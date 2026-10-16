@@ -1,4 +1,5 @@
 import { readFile, readdir } from "node:fs/promises";
+import { windows } from "../platform.mjs";
 
 export function reclaimReleasedMemory(isReleased) {
   // Our standalone launcher exposes GC only in the bridge process. Run after
@@ -14,10 +15,13 @@ export function reclaimReleasedMemory(isReleased) {
 
 // Only descend from the native process we spawned. Read-only, cached, and
 // bounded; no unrelated PID inventory or process signaling is involved.
-export function createMemorySampler(io = { readFile, readdir }) {
+// Windows has no /proc: the plugin server measures every bridge's native tree
+// from one process table instead, so a bridge reports its memory as unknown.
+export function createMemorySampler(io = { readFile, readdir }, platformWindows = windows) {
   let previous = null;
   return async (pid) => {
     if (!pid) return { nativeMemoryBytes: 0, nativeMemoryKind: "pss" };
+    if (platformWindows) return { nativeMemoryBytes: null, nativeMemoryKind: undefined };
     if (
       previous?.pid === pid &&
       Date.now() - previous.at <

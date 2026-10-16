@@ -66,7 +66,7 @@ export function ProcessSettingsScreen({ theme, host }: PluginSurfaceProps) {
               Stop idle processes without closing your conversations.
             </Text>
             {!setup.data.supported && (
-              <Text style={muted}>Process controls currently require Linux.</Text>
+              <Text style={muted}>Process controls currently require Linux or Windows.</Text>
             )}
             <SettingsCard>
               {setup.data.providers.map((provider) => {

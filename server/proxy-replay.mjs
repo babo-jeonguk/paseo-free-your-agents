@@ -1,37 +1,26 @@
 import { constants } from "node:fs";
-import { mkdir, mkdtemp, open, lstat, unlink, rmdir, readdir, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, open, lstat, unlink, rmdir, readdir } from "node:fs/promises";
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { linuxStart, ownerOnly, ownStart, processExists, windows } from "./platform.mjs";
 
 const HEADER_BYTES = 33; // kind, ciphertext length, nonce, authentication tag
 const MANIFEST_LIMIT = 1024;
-const privateFile = (info) =>
-  info.isFile() && info.uid === process.getuid?.() && (info.mode & 0o777) === 0o600;
+const privateFile = (info) => info.isFile() && ownerOnly(info, 0o600);
 const sameFile = (left, right) => left.dev === right.dev && left.ino === right.ino;
 async function privateDirectory(path) {
   const info = await lstat(path);
-  if (
-    !info.isDirectory() ||
-    info.isSymbolicLink() ||
-    info.uid !== process.getuid?.() ||
-    (info.mode & 0o777) !== 0o700
-  )
+  if (!info.isDirectory() || info.isSymbolicLink() || !ownerOnly(info, 0o700))
     throw new Error("Replay directory is not private");
   return info;
 }
 
+// A Windows owner's start cannot be read without a process query, so only an
+// exited PID counts as dead there. A reused PID keeps its files: uncertain.
 async function processStart(pid) {
-  try {
-    const text = await readFile(`/proc/${pid}/stat`, "utf8");
-    const start = text
-      .slice(text.lastIndexOf(")") + 2)
-      .trim()
-      .split(/\s+/)[19];
-    return /^\d+$/.test(start ?? "") ? start : undefined;
-  } catch (error) {
-    return error.code === "ENOENT" ? null : undefined;
-  }
+  if (!windows) return linuxStart(pid);
+  return processExists(pid) ? undefined : null;
 }
 async function ownerFile(directory) {
   const file = await open(join(directory, "owner.json"), constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -68,8 +57,8 @@ async function removeOwned(path, identity) {
     if (error.code !== "ENOENT") throw error;
   });
 }
-// Linux PID birth time prevents deleting another live facade's files when a PID
-// was reused. Uncertain owners, unknown files, symlinks and active stores stay.
+// PID birth time prevents deleting another live facade's files when a PID was
+// reused. Uncertain owners, unknown files, symlinks and active stores stay.
 // No PID is killed and no key/history payload is needed for orphan cleanup.
 async function sweepOrphans(parentDirectory) {
   const names = (await readdir(parentDirectory))
@@ -170,12 +159,16 @@ export async function createEncryptedReplay({
   for (const value of [maxBytes, maxEntryBytes, maxEntries, chunkBytes])
     if (!Number.isSafeInteger(value) || value < 1) throw new Error("Invalid replay budget");
   if (chunkBytes > 1024 * 1024) throw new Error("Replay chunks must remain bounded");
-  parentDirectory ??= join(tmpdir(), `paseo-rc-replays-${process.getuid?.()}`);
+  // Windows temp directories are already per user.
+  parentDirectory ??= join(
+    tmpdir(),
+    windows ? "paseo-rc-replays" : `paseo-rc-replays-${process.getuid?.()}`,
+  );
   await mkdir(parentDirectory, { recursive: true, mode: 0o700 });
   await privateDirectory(parentDirectory);
   await sweepOrphans(parentDirectory);
-  const start = await processStart(process.pid);
-  if (!start) throw new Error("Replay ownership requires Linux process identity");
+  const start = await ownStart();
+  if (!start) throw new Error("Replay ownership requires a process identity");
   const directory = await mkdtemp(join(parentDirectory, "paseo-rc-replay-"));
   const directoryIdentity = await privateDirectory(directory);
   const ownerPath = join(directory, "owner.json");

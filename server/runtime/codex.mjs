@@ -1,5 +1,5 @@
 // Provider compatibility facade. Native ownership is established by a private launch recipe.
-// The test owns either parent IPC or an authenticated Unix control socket.
+// The test owns either parent IPC or an authenticated Unix socket/named pipe.
 // Provider stdout stays Codex RPC; no debugger, host monkeypatch, or TCP listener.
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -18,6 +18,7 @@ import {
 import { createProtocolTracker } from "../proxy-tracker.mjs";
 import { createEncryptedReplay, encodeJson, ReplayInterrupted } from "../proxy-replay.mjs";
 import { createMemorySampler, reclaimReleasedMemory } from "./memory.mjs";
+import { nativeCommand, signalNative } from "../platform.mjs";
 const sampleMemory = createMemorySampler();
 
 if (process.env.RUNTIME_PROXY_RECIPE_FILE)
@@ -229,10 +230,11 @@ async function launch() {
         name !== "NODE_CHANNEL_SERIALIZATION_MODE",
     ),
   );
-  const spawned = spawn(executable, args, {
+  const native = nativeCommand(executable, args, nativeEnv);
+  const spawned = spawn(native.file, native.args, {
+    ...native.options,
     env: nativeEnv,
     stdio: ["pipe", "pipe", "pipe"],
-    detached: process.platform !== "win32",
   });
   child = spawned;
   generation = randomUUID();
@@ -259,15 +261,9 @@ async function stopChild() {
   if (!stopping) return;
   if (stopping.exitCode === null && stopping.signalCode === null) {
     const exited = once(stopping, "exit");
-    // Only the group created by this proxy is addressed. No PID scanning/killing
-    // of other Paseo agents is used.
-    const signal = (name) => {
-      try {
-        process.kill(process.platform === "win32" ? stopping.pid : -stopping.pid, name);
-      } catch (error) {
-        if (error.code !== "ESRCH") throw error;
-      }
-    };
+    // Only the group or tree created by this proxy is addressed. No PID
+    // scanning/killing of other Paseo agents is used.
+    const signal = (name) => signalNative(stopping, name);
     signal("SIGTERM");
     const timeout = setTimeout(() => signal("SIGKILL"), 2_000);
     try {

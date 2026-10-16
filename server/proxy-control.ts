@@ -1,6 +1,7 @@
 import { createConnection } from "node:net";
 import { lstat } from "node:fs/promises";
 import { dirname } from "node:path";
+import { isControlPipe, ownerOnly, windows } from "./platform.mjs";
 
 // A local capability, never a daemon/client RPC payload. Only the proxy that
 // owns this endpoint decides whether its own native child may be released.
@@ -11,12 +12,7 @@ export interface ProxyConnection {
 
 export async function assertPrivateDirectory(path: string): Promise<void> {
   const value = await lstat(path);
-  if (
-    !value.isDirectory() ||
-    value.isSymbolicLink() ||
-    value.uid !== process.getuid?.() ||
-    (value.mode & 0o777) !== 0o700
-  ) {
+  if (!value.isDirectory() || value.isSymbolicLink() || !ownerOnly(value, 0o700)) {
     throw new Error("Runtime Control needs an owner-only directory.");
   }
 }
@@ -30,15 +26,21 @@ export async function proxyRequest(
   },
   timeoutMs = 10_000,
 ): Promise<unknown> {
-  await assertPrivateDirectory(dirname(connection.socketPath));
-  const endpoint = await lstat(connection.socketPath);
-  if (
-    !endpoint.isSocket() ||
-    endpoint.isSymbolicLink() ||
-    endpoint.uid !== process.getuid?.() ||
-    (endpoint.mode & 0o777) !== 0o600
-  ) {
-    throw new Error("Runtime Control endpoint ownership is invalid.");
+  if (windows) {
+    // Named pipes have no directory or mode; only accept our own pipe names.
+    if (!isControlPipe(connection.socketPath))
+      throw new Error("Runtime Control endpoint ownership is invalid.");
+  } else {
+    await assertPrivateDirectory(dirname(connection.socketPath));
+    const endpoint = await lstat(connection.socketPath);
+    if (
+      !endpoint.isSocket() ||
+      endpoint.isSymbolicLink() ||
+      endpoint.uid !== process.getuid?.() ||
+      (endpoint.mode & 0o777) !== 0o600
+    ) {
+      throw new Error("Runtime Control endpoint ownership is invalid.");
+    }
   }
   return new Promise((resolve, reject) => {
     const socket = createConnection(connection.socketPath);

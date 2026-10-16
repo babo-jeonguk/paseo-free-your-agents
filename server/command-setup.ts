@@ -5,6 +5,7 @@ import { mkdir, open, rename, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import { z } from "zod";
 import { assertPrivateDirectory } from "./proxy-control";
+import { controlSupported, ownerOnly, windows } from "./platform.mjs";
 
 const Command = z.array(z.string().min(1).max(16_384)).min(1).max(256);
 const Receipt = z
@@ -41,8 +42,10 @@ export function createCommandSetup(input: {
   installedCommand?: string[];
   prepareCommand?(originalCommand: string[] | null): Promise<string[]>;
 }) {
-  if (process.platform !== "linux")
-    throw new Error("Runtime Control command setup is currently validated on Linux only.");
+  if (!controlSupported)
+    throw new Error(
+      "Runtime Control command setup is currently validated on Linux and Windows only.",
+    );
   const fixedCommand = input.installedCommand ? Command.parse(input.installedCommand) : null;
   if (!fixedCommand && !input.prepareCommand) throw new Error("A runtime command is required.");
   const provider = input.provider ?? "codex";
@@ -176,12 +179,7 @@ export function createCommandReceiptStore(path: string): CommandReceiptStore {
       if (!file) return null;
       try {
         const info = await file.stat();
-        if (
-          !info.isFile() ||
-          info.uid !== process.getuid?.() ||
-          (info.mode & 0o777) !== 0o600 ||
-          info.size > 65_536
-        )
+        if (!info.isFile() || !ownerOnly(info, 0o600) || info.size > 65_536)
           throw new Error("Runtime Control command receipt is not private or valid.");
         return Receipt.parse(JSON.parse(await file.readFile("utf8")));
       } finally {
@@ -206,6 +204,8 @@ export function createCommandReceiptStore(path: string): CommandReceiptStore {
           await file.close();
         }
         await rename(temporary, path);
+        // Node cannot open a directory on Windows to flush it.
+        if (windows) return;
         const directory = await open(dirname(path), constants.O_RDONLY);
         try {
           await directory.sync();

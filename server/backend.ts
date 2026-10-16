@@ -11,6 +11,7 @@ import { prepareRuntimeCommand, recordRuntime } from "./runtime-assets";
 import { createProxyRuntime, type RuntimeProvider } from "./proxy-runtime";
 import { bridgeProvider, type ProviderEntries } from "./provider-profiles";
 import { runtimeApi, type RuntimeApi } from "../shared/model";
+import { controlSupported } from "./platform.mjs";
 
 type Paseo = PluginHandlerContext["paseo"];
 export function createBackend(
@@ -62,7 +63,7 @@ export function createBackend(
     if (!paseo) {
       paseo = api;
       metadata = createConversationMetadata({ agents: api.agents });
-      if (process.platform === "linux")
+      if (controlSupported)
         for (const provider of ["codex", "claude"] as const)
           setups.set(
             provider,
@@ -94,18 +95,18 @@ export function createBackend(
       providers.some((provider) =>
         ["installed", "pending", "changed"].includes(provider.state),
       ) ||
-      (process.platform === "linux" && (await proxy.hasConnections()));
+      (controlSupported && (await proxy.hasConnections()));
     readinessError = null;
     return {
       official: !!official?.supported() && !usingCompatibility,
-      supported: process.platform === "linux",
+      supported: controlSupported,
       providers,
     };
   }
   const current = () =>
     !usingCompatibility && official?.supported() ? official : proxy.api;
   const selected: RuntimeApi = {
-    supported: () => process.platform === "linux" || !!official?.supported(),
+    supported: () => controlSupported || !!official?.supported(),
     snapshot: async (input) => {
       await ready;
       if (readinessError) throw readinessError;
@@ -124,7 +125,7 @@ export function createBackend(
       const setup = setups.get(provider);
       if (!setup)
         throw new Error(
-          "Process control setup is currently supported on Linux only.",
+          "Process control setup is currently supported on Linux and Windows only.",
         );
       usingCompatibility = true;
       await setup[action]();

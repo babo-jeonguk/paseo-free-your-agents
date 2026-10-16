@@ -3,28 +3,19 @@
 import { constants } from "node:fs";
 import { open, lstat, unlink, rmdir } from "node:fs/promises";
 import { basename, dirname } from "node:path";
+import { isControlPipe, ownerOnly, windows } from "./platform.mjs";
 
 export async function ownProxyLease(provider, env = process.env) {
   const path = env.RUNTIME_PROXY_CONNECTION_FILE;
   if (!path) return async () => {};
   const parent = await lstat(dirname(path));
-  if (
-    !parent.isDirectory() ||
-    parent.isSymbolicLink() ||
-    parent.uid !== process.getuid() ||
-    (parent.mode & 0o777) !== 0o700
-  )
+  if (!parent.isDirectory() || parent.isSymbolicLink() || !ownerOnly(parent, 0o700))
     throw new Error("Invalid connection record directory");
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   let identity, contents;
   try {
     identity = await file.stat();
-    if (
-      !identity.isFile() ||
-      identity.uid !== process.getuid() ||
-      (identity.mode & 0o777) !== 0o600 ||
-      identity.size > 8192
-    )
+    if (!identity.isFile() || !ownerOnly(identity, 0o600) || identity.size > 8192)
       throw new Error("Invalid connection record");
     contents = await file.readFile("utf8");
     const record = JSON.parse(contents);
@@ -48,14 +39,17 @@ export async function ownProxyLease(provider, env = process.env) {
   } finally {
     await file.close();
   }
-  const socketDirectory = dirname(env.RUNTIME_PROXY_SOCKET);
-  const directory = await lstat(socketDirectory);
+  // A named pipe has no endpoint directory to verify or remove.
+  const socketDirectory = windows ? null : dirname(env.RUNTIME_PROXY_SOCKET);
+  const directory = socketDirectory && (await lstat(socketDirectory));
   if (
-    !directory.isDirectory() ||
-    directory.isSymbolicLink() ||
-    directory.uid !== process.getuid() ||
-    (directory.mode & 0o777) !== 0o700 ||
-    !basename(socketDirectory).startsWith("paseo-rc-")
+    windows
+      ? !isControlPipe(env.RUNTIME_PROXY_SOCKET)
+      : !directory.isDirectory() ||
+        directory.isSymbolicLink() ||
+        directory.uid !== process.getuid() ||
+        (directory.mode & 0o777) !== 0o700 ||
+        !basename(socketDirectory).startsWith("paseo-rc-")
   )
     throw new Error("Invalid connection endpoint directory");
   let finished = false;
@@ -84,10 +78,12 @@ export async function ownProxyLease(provider, env = process.env) {
       }
       await unlink(path);
     }
-    const endpoint = await lstat(socketDirectory).catch((error) => {
-      if (error.code === "ENOENT") return null;
-      throw error;
-    });
+    const endpoint =
+      socketDirectory &&
+      (await lstat(socketDirectory).catch((error) => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      }));
     if (endpoint && endpoint.ino === directory.ino && endpoint.dev === directory.dev)
       await rmdir(socketDirectory).catch((error) => {
         if (!["ENOENT", "ENOTEMPTY"].includes(error.code)) throw error;

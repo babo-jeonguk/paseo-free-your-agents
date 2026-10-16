@@ -1,37 +1,28 @@
 // Standalone launch allocation. No SDK, daemon internals, network, or signaling.
 // Session hooks issue reusable recipes; each OS proxy launch claims a new lease.
 import { constants } from "node:fs";
-import { open, lstat, mkdtemp, rm, rename, readFile } from "node:fs/promises";
+import { open, lstat, mkdtemp, rm, rename } from "node:fs/promises";
 import { randomBytes, randomUUID } from "node:crypto";
 import { dirname, basename, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { controlSupported, newControlPipe, ownerOnly, ownStart, windows } from "./platform.mjs";
 
 async function privateDirectory(path) {
   const value = await lstat(path);
-  if (
-    !value.isDirectory() ||
-    value.isSymbolicLink() ||
-    value.uid !== process.getuid() ||
-    (value.mode & 0o777) !== 0o700
-  ) {
+  if (!value.isDirectory() || value.isSymbolicLink() || !ownerOnly(value, 0o700)) {
     throw new Error("Invalid launch directory ownership");
   }
 }
 
 export async function claimProxyConnection(recipeFile, expectedProvider) {
-  if (process.platform !== "linux")
-    throw new Error("This compatibility launcher is validated on Linux only");
+  if (!controlSupported)
+    throw new Error("This compatibility launcher is validated on Linux and Windows only");
   await privateDirectory(dirname(recipeFile));
   const file = await open(recipeFile, constants.O_RDONLY | constants.O_NOFOLLOW);
   let recipe;
   try {
     const info = await file.stat();
-    if (
-      !info.isFile() ||
-      info.uid !== process.getuid() ||
-      (info.mode & 0o777) !== 0o600 ||
-      info.size > 8192
-    )
+    if (!info.isFile() || !ownerOnly(info, 0o600) || info.size > 8192)
       throw new Error("Invalid launch recipe");
     recipe = JSON.parse(await file.readFile("utf8"));
   } finally {
@@ -55,16 +46,13 @@ export async function claimProxyConnection(recipeFile, expectedProvider) {
   const directory = join(dirname(dirname(resolve(recipeFile))), "connections");
   if (recipe.recordsDirectory !== directory) throw new Error("Invalid connection directory");
   await privateDirectory(directory);
-  const socketDirectory = await mkdtemp(join(tmpdir(), "paseo-rc-"));
-  const socketPath = join(socketDirectory, "control.sock");
+  // A Windows named pipe needs no directory; its name is fresh per bridge.
+  const socketDirectory = windows ? null : await mkdtemp(join(tmpdir(), "paseo-rc-"));
+  const socketPath = socketDirectory ? join(socketDirectory, "control.sock") : newControlPipe();
   try {
     if (Buffer.byteLength(socketPath) > 100) throw new Error("Control socket path is too long");
     const connectionId = randomUUID();
-    const processStat = await readFile("/proc/self/stat", "utf8");
-    const proxyStart = processStat
-      .slice(processStat.lastIndexOf(")") + 2)
-      .trim()
-      .split(/\s+/)[19];
+    const proxyStart = await ownStart();
     if (!/^\d+$/.test(proxyStart ?? "")) throw new Error("Process birth identity is unavailable");
     const record = {
       version: 1,
@@ -98,7 +86,7 @@ export async function claimProxyConnection(recipeFile, expectedProvider) {
       RUNTIME_PROXY_CONNECTION_FILE: connectionFile,
     };
   } catch (error) {
-    await rm(socketDirectory, { recursive: true, force: true });
+    if (socketDirectory) await rm(socketDirectory, { recursive: true, force: true });
     throw error;
   }
 }

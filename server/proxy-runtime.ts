@@ -14,6 +14,13 @@ import { join, resolve } from "node:path";
 import { z } from "zod";
 import type { Runtime, RuntimeApi, Release } from "../shared/model";
 import { assertPrivateDirectory, proxyRequest } from "./proxy-control";
+import { controlSupported, ownerOnly, processExists, windows } from "./platform.mjs";
+import {
+  createProcessTable,
+  nativeWorkingSet,
+  sameStart,
+  type ProcessTable,
+} from "./windows-processes";
 
 const RecordSchema = z
   .object({
@@ -75,7 +82,10 @@ export function createProxyRuntime(options: {
   // The bridge provider that launches a conversation's provider, such as a
   // profile that extends Claude. Null when no bridge can launch it.
   runtimeProvider?(provider: string): Promise<RuntimeProvider | null>;
+  // Windows only: the process table used for bridge identity and memory.
+  processTable?(notBefore?: number): Promise<ProcessTable>;
 }) {
+  const processTable = options.processTable ?? createProcessTable();
   const runtimeProvider =
     options.runtimeProvider ??
     (async (provider: string) =>
@@ -103,6 +113,41 @@ export function createProxyRuntime(options: {
       });
     return initialized;
   }
+  // Only a proven-dead bridge loses its record. Linux compares the /proc birth
+  // time; Windows compares the recorded Node start with the process creation
+  // time from a table taken after the record was written.
+  async function ownerGone(record: ProxyRecord) {
+    if (!record.proxyPid || !record.proxyStart) return false;
+    if (windows) {
+      if (!processExists(record.proxyPid)) return true;
+      const owner = (await processTable(record.createdAt).catch(() => null))?.processes.get(
+        record.proxyPid,
+      );
+      return !!owner && !sameStart(record.proxyStart, owner.created);
+    }
+    const owner = await readFile(`/proc/${record.proxyPid}/stat`, "utf8").catch(
+      (error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      },
+    );
+    const born = owner
+      ?.slice(owner.lastIndexOf(")") + 2)
+      .trim()
+      .split(/\s+/)[19];
+    return owner === null || (!!born && born !== record.proxyStart);
+  }
+  // A Windows bridge cannot read its native tree's memory; measure it here.
+  async function nativeMemory(record: ProxyRecord, nativePid: number) {
+    if (!record.proxyPid || !record.proxyStart) return null;
+    const table = await processTable().catch(() => null);
+    return table
+      ? nativeWorkingSet(table.processes, nativePid, {
+          pid: record.proxyPid,
+          start: record.proxyStart,
+        })
+      : null;
+  }
   async function readRecords(): Promise<ProxyRecord[]> {
     await initialize();
     const records: ProxyRecord[] = [];
@@ -119,12 +164,7 @@ export function createProxyRuntime(options: {
       if (!file) continue; // A gracefully closed proxy can remove its own record.
       try {
         const info = await file.stat();
-        if (
-          !info.isFile() ||
-          info.uid !== process.getuid?.() ||
-          (info.mode & 0o777) !== 0o600 ||
-          info.size > 8192
-        ) {
+        if (!info.isFile() || !ownerOnly(info, 0o600) || info.size > 8192) {
           throw new Error(
             "Runtime Control connection record is not private or valid.",
           );
@@ -133,52 +173,39 @@ export function createProxyRuntime(options: {
         const record = RecordSchema.parse(JSON.parse(contents));
         if (name !== record.connectionId + ".json")
           throw new Error("Runtime Control connection identity is invalid.");
-        if (record.proxyPid && record.proxyStart) {
-          const owner = await readFile(
-            `/proc/${record.proxyPid}/stat`,
-            "utf8",
-          ).catch((error: NodeJS.ErrnoException) => {
-            if (error.code === "ENOENT") return null;
-            throw error;
-          });
-          const born = owner
-            ?.slice(owner.lastIndexOf(")") + 2)
-            .trim()
-            .split(/\s+/)[19];
-          if (owner === null || (born && born !== record.proxyStart)) {
-            const path = join(recordsDirectory, name),
-              current = await lstat(path).catch(
-                (error: NodeJS.ErrnoException) => {
-                  if (error.code === "ENOENT") return null;
-                  throw error;
-                },
+        if (await ownerGone(record)) {
+          const path = join(recordsDirectory, name),
+            current = await lstat(path).catch(
+              (error: NodeJS.ErrnoException) => {
+                if (error.code === "ENOENT") return null;
+                throw error;
+              },
+            );
+          if (current) {
+            if (
+              current.ino !== info.ino ||
+              current.dev !== info.dev ||
+              current.size !== info.size
+            )
+              throw new Error(
+                "Connection record changed during reconciliation",
               );
-            if (current) {
-              if (
-                current.ino !== info.ino ||
-                current.dev !== info.dev ||
-                current.size !== info.size
-              )
-                throw new Error(
-                  "Connection record changed during reconciliation",
-                );
-              // Re-read the owned fd by position before deleting a dead record.
-              // This metadata is never used to select a PID for termination.
-              const buffer = Buffer.alloc(info.size);
-              const read = await file.read(buffer, 0, buffer.length, 0);
-              if (
-                read.bytesRead !== info.size ||
-                buffer.toString("utf8") !== contents
-              )
-                throw new Error(
-                  "Connection record changed during reconciliation",
-                );
-              await unlink(path).catch((error: NodeJS.ErrnoException) => {
-                if (error.code !== "ENOENT") throw error;
-              });
-            }
-            continue;
+            // Re-read the owned fd by position before deleting a dead record.
+            // This metadata is never used to select a PID for termination.
+            const buffer = Buffer.alloc(info.size);
+            const read = await file.read(buffer, 0, buffer.length, 0);
+            if (
+              read.bytesRead !== info.size ||
+              buffer.toString("utf8") !== contents
+            )
+              throw new Error(
+                "Connection record changed during reconciliation",
+              );
+            await unlink(path).catch((error: NodeJS.ErrnoException) => {
+              if (error.code !== "ENOENT") throw error;
+            });
           }
+          continue;
         }
         records.push(record);
       } finally {
@@ -225,7 +252,7 @@ export function createProxyRuntime(options: {
     };
   }
   const api: RuntimeApi = {
-    supported: () => process.platform === "linux",
+    supported: () => controlSupported,
     async snapshot({ agentIds }) {
       const [records, metadata] = await Promise.all([
         readRecords(),
@@ -283,6 +310,8 @@ export function createProxyRuntime(options: {
               throw new Error("Provider mismatch");
             const view = await inspect(record);
             const absent = view.phase === "released";
+            if (windows && !absent && view.nativePid && view.nativeMemoryBytes == null)
+              view.nativeMemoryBytes = await nativeMemory(record, view.nativePid);
             const working =
               view.activeTurns +
                 view.pendingRequests +

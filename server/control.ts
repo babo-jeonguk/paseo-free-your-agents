@@ -249,7 +249,7 @@ export function createControl(store: StateStore, now: () => number = Date.now) {
           supported,
           reason: supported
             ? null
-            : "Process control is unavailable on this host. Compatibility controls currently require Linux.",
+            : "Process control is unavailable on this host. Compatibility controls currently require Linux or Windows.",
           revision: value.revision,
           rows,
         };

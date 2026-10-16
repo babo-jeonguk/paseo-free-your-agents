@@ -204,6 +204,21 @@ test("cancel an interrupted install before the config patch without introducing 
 });
 
 test(
+  "Windows receipts persist under the user profile without journaling provider settings",
+  { skip: process.platform !== "win32" },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "command-receipt-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const store = createCommandReceiptStore(join(directory, "setup", "codex.json"));
+    const f = fixture();
+    await createCommandSetup({ ...f.options, store }).enable();
+    assert.equal((await store.read())!.phase, "installed");
+    assert.ok(!(await readFile(join(directory, "setup", "codex.json"), "utf8")).includes("KEEP"));
+    assert.equal((await createCommandSetup({ ...f.options, store }).restore()).state, "restored");
+  },
+);
+
+test(
   "ownership receipts persist privately and reject unsafe files",
   { skip: process.platform !== "linux" },
   async (t) => {

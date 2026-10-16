@@ -691,7 +691,8 @@ export function RuntimeScreen({
           ))}
         </View>
         <Text style={styles.muted}>
-          Memory covers native agent processes: PSS where available, otherwise an RSS estimate.
+          Memory covers native agent processes: PSS where available, otherwise an RSS estimate
+          (the working set on Windows).
           Lightweight CLI bridges remain while conversations are open. A conversation is measured
           once its process starts with process controls enabled.
         </Text>
