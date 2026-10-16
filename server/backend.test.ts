@@ -59,7 +59,8 @@ test("process control is on by default and stays off once turned off", { skip: !
       phase: "installed",
     });
     const updated = createBackend(directory);
-    await updated.attach(paseo).snapshot({ agentIds: [] });
+    updated.attach(paseo);
+    // Settings read right after attach already see the update.
     assert.deepEqual(await states(updated), { codex: "installed", claude: "restored" });
     assert.match(String(config.providers.codex?.command), /launchers/);
     assert.equal((await receipts.read())!.launcher, launcherBuild);

@@ -25,7 +25,10 @@ export function createBackend(
     metadata: ReturnType<typeof createConversationMetadata> | null = null;
   let official: RuntimeApi | null = null,
     usingCompatibility = false,
-    ready: Promise<unknown> = Promise.resolve();
+    ready: Promise<unknown> = Promise.resolve(),
+    // The first attach's default setup and update. Settings wait for it, so they
+    // never show the command it is about to replace.
+    defaults: Promise<unknown> = Promise.resolve();
   let readinessError: unknown = null;
   const setups = new Map<
     "codex" | "claude",
@@ -82,7 +85,7 @@ export function createBackend(
       // Process control is on by default: the first attach turns on providers
       // that were never set up. Turning one off leaves a receipt that keeps it off.
       // After an update, new conversations start this version's bridge.
-      const defaults = Promise.all(
+      defaults = Promise.all(
         [...setups].map(([provider, setup]) =>
           setup
             .enableIfNew()
@@ -134,7 +137,10 @@ export function createBackend(
   };
   return {
     attach,
-    status,
+    async status() {
+      await defaults;
+      return status();
+    },
     async change(provider: "codex" | "claude", action: "enable" | "restore") {
       const setup = setups.get(provider);
       if (!setup)
