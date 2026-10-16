@@ -9,7 +9,10 @@ import { createProxyRuntime, type ProxyRecord } from "./proxy-runtime";
 import { claimProxyConnection } from "./proxy-launch.mjs";
 import { ownProxyLease } from "./proxy-lease.mjs";
 
-async function setup(t: { after(fn: () => Promise<void>): void }) {
+async function setup(
+  t: { after(fn: () => Promise<void>): void },
+  providers: Record<string, string> = {},
+) {
   const directory = await mkdtemp(join(tmpdir(), "proxy-runtime-test-"));
   const endpoints = new Set<string>();
   const connections = new Set<Socket>();
@@ -28,9 +31,15 @@ async function setup(t: { after(fn: () => Promise<void>): void }) {
       ids.map((agentId) => ({
         agentId,
         title: "Conversation",
-        provider: agentId === "claude" ? "claude" : "codex",
+        provider: providers[agentId] ?? (agentId === "claude" ? "claude" : "codex"),
         workspace: "workspace",
       })),
+    runtimeProvider: async (provider: string) =>
+      provider === "codex" || provider.startsWith("codex-")
+        ? ("codex" as const)
+        : provider === "claude" || provider === "claude-main"
+          ? ("claude" as const)
+          : null,
   };
   let adapter = createProxyRuntime(options);
   const requests: { op: string; id: string; expectedGeneration?: string }[] = [];
@@ -408,5 +417,26 @@ test(
     await cleanup();
     assert.deepEqual(await readdir(join(directory, "connections")), []);
     await assert.rejects(stat(dirname(env.RUNTIME_PROXY_SOCKET!)), /ENOENT/);
+  },
+);
+
+test(
+  "profiles that launch through a bridge get process control under their own name",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const { adapter, peer } = await setup(t, {
+      main: "claude-main",
+      reserve: "codex-reserve",
+      custom: "claude-custom",
+    });
+    await peer("main", "claude");
+    const [main, reserve, custom] = await adapter.api.snapshot({
+      agentIds: ["main", "reserve", "custom"],
+    });
+    assert.equal(main!.provider, "claude-main");
+    assert.equal(main!.presence, "running");
+    assert.equal(main!.controlStatus, "available");
+    assert.equal(reserve!.controlStatus, "after-restart");
+    assert.equal(custom!.controlStatus, "unsupported");
   },
 );

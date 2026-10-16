@@ -8,7 +8,8 @@ import { homedir } from "node:os";
 import { createCommandSetup, createCommandReceiptStore } from "./command-setup";
 import { createConversationMetadata } from "./conversation-metadata";
 import { prepareRuntimeCommand, recordRuntime } from "./runtime-assets";
-import { createProxyRuntime } from "./proxy-runtime";
+import { createProxyRuntime, type RuntimeProvider } from "./proxy-runtime";
+import { bridgeProvider, type ProviderEntries } from "./provider-profiles";
 import { runtimeApi, type RuntimeApi } from "../shared/model";
 
 type Paseo = PluginHandlerContext["paseo"];
@@ -29,9 +30,21 @@ export function createBackend(
     "codex" | "claude",
     ReturnType<typeof createCommandSetup>
   >();
+  let profiles: { expiresAt: number; providers: ProviderEntries } | null = null;
+  async function runtimeProvider(provider: string): Promise<RuntimeProvider | null> {
+    if (provider === "codex" || provider === "claude") return provider;
+    if (!paseo) return null;
+    if (!profiles || Date.now() >= profiles.expiresAt)
+      profiles = {
+        expiresAt: Date.now() + 15_000,
+        providers: (await paseo.config.get()).config.providers ?? {},
+      };
+    return bridgeProvider(profiles.providers, provider);
+  }
   const proxy = createProxyRuntime({
     directory: join(directory, "runtime"),
     metadata: (ids) => (metadata ? metadata(ids) : Promise.resolve([])),
+    runtimeProvider,
   });
   const launchers = join(directory, "launchers");
   // Launchers exist only after a command was enabled; loading never creates them.
@@ -118,8 +131,9 @@ export function createBackend(
       return status();
     },
     async prepareSession(request: PluginSessionOpenRequest) {
-      const setup = setups.get(request.provider as "codex" | "claude");
-      if (!setup) return request;
+      const provider = await runtimeProvider(request.provider).catch(() => null);
+      const setup = provider ? setups.get(provider) : undefined;
+      if (!provider || !setup) return request;
       try {
         if ((await setup.status()).state !== "installed") return request;
       } catch {
@@ -129,7 +143,10 @@ export function createBackend(
       try {
         return {
           ...request,
-          env: { ...request.env, ...(await proxy.prepareSession(request)) },
+          env: {
+            ...request.env,
+            ...(await proxy.prepareSession({ ...request, provider })),
+          },
         };
       } catch {
         console.error(

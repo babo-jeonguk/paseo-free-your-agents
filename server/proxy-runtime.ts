@@ -66,11 +66,20 @@ export interface ConversationMetadata {
   workspace: string;
 }
 
+export type RuntimeProvider = "codex" | "claude";
+
 export function createProxyRuntime(options: {
   directory: string;
   // Read-only metadata; callers must not use timeline/commands or ensure-load.
   metadata(agentIds: string[]): Promise<ConversationMetadata[]>;
+  // The bridge provider that launches a conversation's provider, such as a
+  // profile that extends Claude. Null when no bridge can launch it.
+  runtimeProvider?(provider: string): Promise<RuntimeProvider | null>;
 }) {
+  const runtimeProvider =
+    options.runtimeProvider ??
+    (async (provider: string) =>
+      provider === "codex" || provider === "claude" ? provider : null);
   const directory = resolve(options.directory);
   const recordsDirectory = join(directory, "connections");
   const recipesDirectory = join(directory, "recipes");
@@ -223,6 +232,15 @@ export function createProxyRuntime(options: {
         options.metadata(agentIds),
       ]);
       const details = new Map(metadata.map((value) => [value.agentId, value]));
+      const bridges = new Map<string, Promise<RuntimeProvider | null>>();
+      const bridgeFor = (provider: string) => {
+        let bridge = bridges.get(provider);
+        if (!bridge) {
+          bridge = runtimeProvider(provider).catch(() => null);
+          bridges.set(provider, bridge);
+        }
+        return bridge;
+      };
       return Promise.all(
         [...new Set(agentIds)].map(async (agentId) => {
           const info = details.get(agentId) ?? {
@@ -231,17 +249,18 @@ export function createProxyRuntime(options: {
             provider: "Unknown",
             workspace: "",
           };
+          const bridge = await bridgeFor(info.provider);
           const matches = records.filter(
             (record) => record.agentId === agentId,
           );
           if (!matches.length)
-            return info.provider === "codex"
+            return bridge === "codex"
               ? unknown(
                   info,
                   "Controls become available after the Paseo daemon restarts.",
                   "after-restart",
                 )
-              : info.provider === "claude"
+              : bridge === "claude"
                 ? unknown(
                     info,
                     "A managed Claude runtime connection has not yet been established.",
@@ -260,7 +279,7 @@ export function createProxyRuntime(options: {
             );
           const record = matches[0]!;
           try {
-            if (info.provider !== record.provider)
+            if (bridge !== record.provider)
               throw new Error("Provider mismatch");
             const view = await inspect(record);
             const absent = view.phase === "released";
