@@ -44,7 +44,8 @@ async function setup(t: { after(fn: () => Promise<void>): void }) {
       const runtime = runtimes.get(agentId)!;
       if (runtime.generation !== expectedGeneration)
         return { status: "generation-changed", error: null };
-      if (runtime.activity !== "idle") return { status: "busy", error: null };
+      if (runtime.activity !== "idle" || !runtime.releasable)
+        return { status: "busy", error: null };
       releases.push(agentId);
       runtimes.set(agentId, {
         ...runtime,
@@ -242,6 +243,90 @@ test("stopped conversations are not polled in the background and reconcile when 
     true,
   );
   assert.deepEqual((await control.list()).rows, []);
+});
+
+test("a new reservation during Claude work keeps its deadline when work finishes early", async (t) => {
+  const f = await setup(t);
+  await f.owner("desktop", ["a"]);
+  const runtime = f.runtimes.get("a")!;
+  Object.assign(runtime, {
+    provider: "claude",
+    activity: "working",
+    releasable: false,
+    schedulable: true,
+    unavailableReason: "Waiting for a safe stopping point. You can schedule a stop.",
+  });
+  const input = { agentId: "a", expectedGeneration: "boot:1", expectedStopId: null };
+  assert.equal((await f.control.change({ ...input, action: "now" })).changed, false);
+  assert.equal((await f.control.change({ ...input, action: "schedule", hours: 1 })).changed, true);
+  const stop = (await f.control.list()).rows[0]!.stop!;
+  assert.equal(stop.dueAt, 3_700_000);
+  assert.equal(stop.state, "scheduled");
+  assert.deepEqual(f.releases, []);
+  f.advance(1_200_000);
+  runtime.activity = "idle";
+  runtime.releasable = true;
+  await f.control.tick();
+  assert.deepEqual(f.releases, [], "Finishing work does not shorten the reservation");
+  f.advance(2_400_000);
+  await f.control.tick();
+  assert.deepEqual(f.releases, ["a"]);
+});
+
+test("a reservation made during work waits past its deadline for work and safety checks", async (t) => {
+  const f = await setup(t);
+  await f.owner("desktop", ["a"]);
+  const runtime = f.runtimes.get("a")!;
+  Object.assign(runtime, { provider: "claude", activity: "working", releasable: false, schedulable: true });
+  assert.equal((await f.control.change({
+    agentId: "a", expectedGeneration: "boot:1", expectedStopId: null,
+    action: "schedule", hours: 0.25,
+  })).changed, true);
+  f.advance(900_000);
+  for (const activity of ["working", "background", "idle"] as const) {
+    runtime.activity = activity;
+    await f.control.tick();
+    assert.deepEqual(f.releases, []);
+    const stop = (await f.control.list()).rows[0]!.stop!;
+    assert.equal(stop.state, "deferred");
+    assert.equal(stop.dueAt, 1_000_000);
+  }
+  runtime.releasable = true;
+  await f.control.tick();
+  assert.deepEqual(f.releases, ["a"]);
+  assert.equal((await f.control.list()).rows[0]!.stop, null);
+});
+
+test("working reservations can be updated and cancelled, but unsupported or stale targets stay blocked", async (t) => {
+  const f = await setup(t);
+  await f.owner("desktop", ["a"]);
+  const runtime = f.runtimes.get("a")!;
+  Object.assign(runtime, { provider: "claude", activity: "working", releasable: false, schedulable: true });
+  const input = { agentId: "a", expectedGeneration: "boot:1", action: "schedule" as const, hours: 1 };
+  assert.equal((await f.control.change({ ...input, expectedStopId: null })).changed, true);
+  const previous = (await f.control.list()).rows[0]!.stop!;
+  f.advance(1000);
+  assert.equal((await f.control.change({ ...input, hours: 2, expectedStopId: previous.id })).changed, true);
+  const updated = (await f.control.list()).rows[0]!.stop!;
+  assert.notEqual(updated.id, previous.id);
+  assert.equal(updated.dueAt, 7_301_000);
+  assert.equal((await f.control.change({ ...input, expectedStopId: previous.id })).changed, false);
+  assert.equal((await f.control.change({ ...input, action: "cancel", expectedStopId: updated.id })).changed, true);
+  f.advance(8_000_000);
+  await f.control.tick();
+  assert.deepEqual(f.releases, []);
+  for (const blocked of [
+    { schedulable: false }, // Hooks/version/protocol validation failed.
+    { schedulable: undefined }, // An old bridge has not advertised support.
+    { presence: "unknown" as const },
+    { presence: "absent" as const },
+    { generation: null },
+    { generation: "boot:2" },
+  ]) {
+    f.runtimes.set("a", { ...runtime, ...blocked });
+    assert.equal((await f.control.change({ ...input, expectedStopId: null })).changed, false);
+    assert.equal((await f.control.list()).rows[0]!.stop, null);
+  }
 });
 
 test("the fixed deadline is deferred through foreground and background work", async (t) => {

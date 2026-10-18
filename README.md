@@ -47,6 +47,8 @@ To check that it works, start a new conversation and wait for the first reply. T
 
 Click **Control** on a conversation to stop it now, or to schedule, update or cancel a stop. A busy agent offers **Stop when finished…** instead.
 
+You can schedule, update or cancel a stop while an agent is working. The timer starts when you save the schedule. If work finishes early, the process stays until the scheduled time; if work is still running then, the stop waits for a safe stopping point. Background tasks and pending permissions also keep the process protected.
+
 ![Process control dialog for one conversation, with schedule presets and a stop button](assets/stop-menu.png)
 
 After a stop, the conversation and its tab stay open, and its status becomes **Process stopped**. Send a message to resume the same session.

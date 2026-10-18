@@ -305,7 +305,9 @@ export function createControl(store: StateStore, now: () => number = Date.now) {
         );
         if (
           !runtime ||
-          !runtime.releasable ||
+          !(input.action === "schedule"
+            ? (runtime.schedulable ?? runtime.releasable)
+            : runtime.releasable) ||
           runtime.presence !== "running" ||
           runtime.generation === null
         )
