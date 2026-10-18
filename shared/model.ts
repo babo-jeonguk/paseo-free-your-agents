@@ -10,6 +10,8 @@ export const RuntimeSchema = z.object({
   activity: z.enum(["idle", "working", "background", "unknown"]),
   memoryBytes: z.number().nonnegative().nullable(),
   releasable: z.boolean(),
+  // Older bridges/adapters advertise only releasable; retain that boundary.
+  schedulable: z.boolean().optional(),
   unavailableReason: z.string().nullable(),
   controlStatus: z.enum(["available", "after-restart", "unsupported", "unavailable"]).optional(),
 });

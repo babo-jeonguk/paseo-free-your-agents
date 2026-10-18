@@ -72,12 +72,13 @@ async function setup(
       agentId,
       phase: "running",
       generation: randomUUID(),
-      nativePid: process.pid,
+      nativePid: process.pid as number | null,
       activeTurns: 0,
       pendingRequests: 0,
       pendingServerRequests: 0,
       unfinishedGoals: 0,
       releaseSupported: true,
+      scheduleSupported: undefined as boolean | undefined,
       backgroundTasks: 0,
       sessionCrons: 0,
       unavailableReason: undefined as string | undefined,
@@ -169,7 +170,7 @@ test(
       "Capabilities must not reach inventory DTOs",
     );
     state.phase = "released";
-    state.nativePid = null as unknown as number;
+    state.nativePid = null;
     const [stopped] = await adapter.api.snapshot({ agentIds: ["a"] });
     assert.equal(stopped!.presence, "absent");
     assert.equal(stopped!.generation, null);
@@ -400,6 +401,35 @@ test(
     assert.equal(disabled!.releasable, false);
     assert.equal(disabled!.unavailableReason, state.unavailableReason);
     assert.equal(disabled!.presence, "running");
+  },
+);
+
+test(
+  "Claude reservations remain available while release waits for a safety snapshot",
+  supported,
+  async (t) => {
+    const { adapter, peer } = await setup(t);
+    const { state } = await peer("claude", "claude");
+    state.activeTurns = 1;
+    state.releaseSupported = false;
+    state.scheduleSupported = true;
+    state.unavailableReason = "Waiting for a safe stopping point. You can schedule a stop.";
+    const [working] = await adapter.api.snapshot({ agentIds: ["claude"] });
+    assert.equal(working!.schedulable, true);
+    assert.equal(working!.releasable, false);
+    assert.equal(working!.activity, "working");
+    assert.equal(working!.controlStatus, "available");
+    state.scheduleSupported = undefined;
+    assert.equal((await adapter.api.snapshot({ agentIds: ["claude"] }))[0]!.schedulable, false);
+    state.releaseSupported = true;
+    assert.equal((await adapter.api.snapshot({ agentIds: ["claude"] }))[0]!.schedulable, true);
+    state.releaseSupported = false;
+    state.scheduleSupported = false;
+    assert.equal((await adapter.api.snapshot({ agentIds: ["claude"] }))[0]!.schedulable, false);
+    state.scheduleSupported = true;
+    state.phase = "released";
+    state.nativePid = null as unknown as number;
+    assert.equal((await adapter.api.snapshot({ agentIds: ["claude"] }))[0]!.schedulable, false);
   },
 );
 

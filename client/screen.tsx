@@ -626,6 +626,12 @@ export function RuntimeScreen({
     query.data?.supported === true &&
     currentRow?.runtime.releasable === true &&
     currentRow.runtime.presence === "running";
+  const canSchedule =
+    currentRow?.stop?.state !== "stopping" &&
+    query.data?.supported === true &&
+    currentRow?.runtime.presence === "running" &&
+    currentRow.runtime.generation !== null &&
+    (currentRow.runtime.schedulable ?? currentRow.runtime.releasable);
   const panelRow = currentRow ?? dialog?.row;
   const hasPendingStop = currentRow ? pendingStop(currentRow) : false;
   const canCancel = hasPendingStop && currentRow?.stop?.state !== "stopping";
@@ -959,7 +965,7 @@ export function RuntimeScreen({
                       )}
                     </View>
                   )}
-                  {canStop ? (
+                  {canSchedule ? (
                     <View style={styles.section}>
                       <View style={styles.line}>
                         <Icon name="Clock3" size={18} color={theme.colors.foregroundMuted} />
@@ -968,7 +974,8 @@ export function RuntimeScreen({
                         </Text>
                       </View>
                       <Text style={styles.muted}>
-                        Free memory later. Active work finishes first.
+                        The timer starts when you schedule. If work is still running at the
+                        scheduled time, the stop waits for it to finish.
                       </Text>
                       <View style={styles.presets}>
                         {[
