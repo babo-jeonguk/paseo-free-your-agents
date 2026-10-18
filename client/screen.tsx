@@ -626,6 +626,12 @@ export function RuntimeScreen({
     query.data?.supported === true &&
     currentRow?.runtime.releasable === true &&
     currentRow.runtime.presence === "running";
+  const canSchedule =
+    currentRow?.stop?.state !== "stopping" &&
+    query.data?.supported === true &&
+    currentRow?.runtime.presence === "running" &&
+    currentRow.runtime.generation !== null &&
+    (currentRow.runtime.schedulable ?? currentRow.runtime.releasable);
   const panelRow = currentRow ?? dialog?.row;
   const hasPendingStop = currentRow ? pendingStop(currentRow) : false;
   const canCancel = hasPendingStop && currentRow?.stop?.state !== "stopping";
@@ -819,7 +825,7 @@ export function RuntimeScreen({
           <Text style={[styles.muted, { flexShrink: 1 }]}>
             {view.selected
               .map((id) => filters.find((filter) => filter.id === id)!.label)
-              .join(" OR ") || "All open conversations"}
+              .join(" OR ") || "All managed conversations"}
           </Text>
         </View>
         <View style={styles.panel}>
@@ -884,11 +890,11 @@ export function RuntimeScreen({
             <View style={styles.empty}>
               <Icon name="MemoryStick" size={28} color={theme.colors.foregroundMuted} />
               <Text style={styles.strong}>
-                {rows.length === 0 ? "No open conversations reported" : "No matching conversations"}
+                {rows.length === 0 ? "No managed conversations reported" : "No matching conversations"}
               </Text>
               <Text style={styles.muted}>
                 {rows.length === 0
-                  ? "Open a conversation in a connected Paseo window."
+                  ? "Open a conversation tab, or check which conversations are included in Settings."
                   : "No open conversations match your search and selected categories."}
               </Text>
               {view.query !== "" && (
@@ -959,7 +965,7 @@ export function RuntimeScreen({
                       )}
                     </View>
                   )}
-                  {canStop ? (
+                  {canSchedule ? (
                     <View style={styles.section}>
                       <View style={styles.line}>
                         <Icon name="Clock3" size={18} color={theme.colors.foregroundMuted} />
@@ -968,7 +974,8 @@ export function RuntimeScreen({
                         </Text>
                       </View>
                       <Text style={styles.muted}>
-                        Free memory later. Active work finishes first.
+                        The timer starts when you schedule. If work is still running at the
+                        scheduled time, the stop waits for it to finish.
                       </Text>
                       <View style={styles.presets}>
                         {[

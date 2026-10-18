@@ -296,8 +296,16 @@ async function stopNative() {
   if (child === current) child = null;
 }
 async function snapshot() {
+  const memory = await sampleMemory(child?.pid);
+  // A reservation does not release anything. Its eventual release still needs
+  // this turn's complete safety snapshot and all guards in release().
+  const scheduleSupported =
+    !hooksDisabled &&
+    protocolSupported &&
+    trackingComplete() &&
+    claudeVersions.includes(version);
   return {
-    ...(await sampleMemory(child?.pid)),
+    ...memory,
     controlVersion: 1,
     connectionId: process.env.RUNTIME_PROXY_CONNECTION_ID ?? null,
     agentId: process.env.RUNTIME_PROXY_AGENT_ID ?? null,
@@ -317,12 +325,8 @@ async function snapshot() {
     sessionId,
     cacheBytes: reads.stats().bytes,
     cacheByteLimit: reads.stats().maxBytes,
-    releaseSupported:
-      !hooksDisabled &&
-      protocolSupported &&
-      trackingComplete() &&
-      claudeVersions.includes(version) &&
-      safety !== null,
+    scheduleSupported,
+    releaseSupported: scheduleSupported && safety !== null,
     unavailableReason: hooksDisabled
       ? launchValidated
         ? "Claude SDK hooks are disabled for this invocation."
@@ -331,7 +335,9 @@ async function snapshot() {
       ? "Protocol tracking capacity was exceeded. The process was left running."
       : !protocolSupported || (version && !claudeVersions.includes(version))
       ? "This Claude version or operation has not been validated for process control."
-      : "Claude stop safety has not yet been established. SDK hooks must be enabled.",
+      : scheduleSupported
+      ? "Waiting for a safe stopping point. You can schedule a stop."
+      : "Claude process control is waiting for initialization.",
   };
 }
 async function release(expectedGeneration) {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createControl } from "./control";
@@ -44,7 +44,8 @@ async function setup(t: { after(fn: () => Promise<void>): void }) {
       const runtime = runtimes.get(agentId)!;
       if (runtime.generation !== expectedGeneration)
         return { status: "generation-changed", error: null };
-      if (runtime.activity !== "idle") return { status: "busy", error: null };
+      if (runtime.activity !== "idle" || !runtime.releasable)
+        return { status: "busy", error: null };
       releases.push(agentId);
       runtimes.set(agentId, {
         ...runtime,
@@ -242,6 +243,90 @@ test("stopped conversations are not polled in the background and reconcile when 
     true,
   );
   assert.deepEqual((await control.list()).rows, []);
+});
+
+test("a new reservation during Claude work keeps its deadline when work finishes early", async (t) => {
+  const f = await setup(t);
+  await f.owner("desktop", ["a"]);
+  const runtime = f.runtimes.get("a")!;
+  Object.assign(runtime, {
+    provider: "claude",
+    activity: "working",
+    releasable: false,
+    schedulable: true,
+    unavailableReason: "Waiting for a safe stopping point. You can schedule a stop.",
+  });
+  const input = { agentId: "a", expectedGeneration: "boot:1", expectedStopId: null };
+  assert.equal((await f.control.change({ ...input, action: "now" })).changed, false);
+  assert.equal((await f.control.change({ ...input, action: "schedule", hours: 1 })).changed, true);
+  const stop = (await f.control.list()).rows[0]!.stop!;
+  assert.equal(stop.dueAt, 3_700_000);
+  assert.equal(stop.state, "scheduled");
+  assert.deepEqual(f.releases, []);
+  f.advance(1_200_000);
+  runtime.activity = "idle";
+  runtime.releasable = true;
+  await f.control.tick();
+  assert.deepEqual(f.releases, [], "Finishing work does not shorten the reservation");
+  f.advance(2_400_000);
+  await f.control.tick();
+  assert.deepEqual(f.releases, ["a"]);
+});
+
+test("a reservation made during work waits past its deadline for work and safety checks", async (t) => {
+  const f = await setup(t);
+  await f.owner("desktop", ["a"]);
+  const runtime = f.runtimes.get("a")!;
+  Object.assign(runtime, { provider: "claude", activity: "working", releasable: false, schedulable: true });
+  assert.equal((await f.control.change({
+    agentId: "a", expectedGeneration: "boot:1", expectedStopId: null,
+    action: "schedule", hours: 0.25,
+  })).changed, true);
+  f.advance(900_000);
+  for (const activity of ["working", "background", "idle"] as const) {
+    runtime.activity = activity;
+    await f.control.tick();
+    assert.deepEqual(f.releases, []);
+    const stop = (await f.control.list()).rows[0]!.stop!;
+    assert.equal(stop.state, "deferred");
+    assert.equal(stop.dueAt, 1_000_000);
+  }
+  runtime.releasable = true;
+  await f.control.tick();
+  assert.deepEqual(f.releases, ["a"]);
+  assert.equal((await f.control.list()).rows[0]!.stop, null);
+});
+
+test("working reservations can be updated and cancelled, but unsupported or stale targets stay blocked", async (t) => {
+  const f = await setup(t);
+  await f.owner("desktop", ["a"]);
+  const runtime = f.runtimes.get("a")!;
+  Object.assign(runtime, { provider: "claude", activity: "working", releasable: false, schedulable: true });
+  const input = { agentId: "a", expectedGeneration: "boot:1", action: "schedule" as const, hours: 1 };
+  assert.equal((await f.control.change({ ...input, expectedStopId: null })).changed, true);
+  const previous = (await f.control.list()).rows[0]!.stop!;
+  f.advance(1000);
+  assert.equal((await f.control.change({ ...input, hours: 2, expectedStopId: previous.id })).changed, true);
+  const updated = (await f.control.list()).rows[0]!.stop!;
+  assert.notEqual(updated.id, previous.id);
+  assert.equal(updated.dueAt, 7_301_000);
+  assert.equal((await f.control.change({ ...input, expectedStopId: previous.id })).changed, false);
+  assert.equal((await f.control.change({ ...input, action: "cancel", expectedStopId: updated.id })).changed, true);
+  f.advance(8_000_000);
+  await f.control.tick();
+  assert.deepEqual(f.releases, []);
+  for (const blocked of [
+    { schedulable: false }, // Hooks/version/protocol validation failed.
+    { schedulable: undefined }, // An old bridge has not advertised support.
+    { presence: "unknown" as const },
+    { presence: "absent" as const },
+    { generation: null },
+    { generation: "boot:2" },
+  ]) {
+    f.runtimes.set("a", { ...runtime, ...blocked });
+    assert.equal((await f.control.change({ ...input, expectedStopId: null })).changed, false);
+    assert.equal((await f.control.list()).rows[0]!.stop, null);
+  }
 });
 
 test("the fixed deadline is deferred through foreground and background work", async (t) => {
@@ -443,4 +528,74 @@ test("periodic reports refresh freshness without rewriting state", async (t) => 
     await f.control.publish({ ownerId: "desktop", epoch, revision: 0, agentIds: ["b"] }),
     false,
   );
+});
+
+test("background management defaults off, gates server actions, and includes only open tabs when enabled", async (t) => {
+  const f = await setup(t);
+  const foreground = async (ids: string[]) => ids.filter((id) => id !== "b");
+  f.control.attach(f.api, foreground);
+  f.runtimes.set("b", { ...f.runtimes.get("a")!, agentId: "b" });
+  f.runtimes.set("closed", { ...f.runtimes.get("a")!, agentId: "closed" });
+  await f.owner("desktop", ["a", "b"]);
+  assert.deepEqual(await f.control.management(), { includeBackground: false });
+  assert.deepEqual((await f.control.list()).rows.map((row) => row.runtime.agentId), ["a"]);
+  const request = { agentId: "b", expectedGeneration: "boot:1", expectedStopId: null, action: "now" as const };
+  assert.equal((await f.control.change(request)).changed, false);
+  assert.deepEqual(f.releases, []);
+
+  await f.control.changeManagement({ includeBackground: true });
+  assert.deepEqual((await f.control.list()).rows.map((row) => row.runtime.agentId), ["a", "b"]);
+  assert.equal((await f.control.change({ ...request, agentId: "closed" })).changed, false);
+  const restarted = createControl(f.store);
+  restarted.attach(f.api, foreground);
+  assert.deepEqual(await restarted.management(), { includeBackground: true });
+  assert.deepEqual((await restarted.list()).rows.map((row) => row.runtime.agentId), ["a", "b"]);
+
+  await f.control.change({ ...request, action: "schedule", hours: 1 });
+  await f.control.changeManagement({ includeBackground: false });
+  assert.equal((await f.store.read()).stops.length, 0);
+  f.advance(3_600_000);
+  await f.control.tick();
+  assert.deepEqual(f.releases, []);
+  await f.control.changeManagement({ includeBackground: true });
+  assert.equal((await f.control.list()).rows.find((row) => row.runtime.agentId === "b")!.stop, null);
+});
+
+test("narrowing management waits for in-flight release and refuses an unconfirmed stop", async (t) => {
+  const f = await setup(t);
+  let entered!: () => void, finish!: () => void;
+  const releasing = new Promise<void>((resolve) => { entered = resolve; });
+  const gate = new Promise<void>((resolve) => { finish = resolve; });
+  f.control.attach({
+    ...f.api,
+    releaseIfIdle: async () => {
+      entered();
+      await gate;
+      throw new Error("Fixture timeout after admission");
+    },
+  }, async () => []);
+  await f.owner("desktop", ["a"]);
+  await f.control.changeManagement({ includeBackground: true });
+  const stop = f.control.change({ agentId: "a", expectedGeneration: "boot:1", expectedStopId: null, action: "now" });
+  await releasing;
+  let settled = false;
+  const narrower = f.control.changeManagement({ includeBackground: false });
+  void narrower.then(() => { settled = true; }, () => { settled = true; });
+  await new Promise(setImmediate);
+  assert.equal(settled, false);
+  const rejected = assert.rejects(narrower, /not confirmed/);
+  finish();
+  await stop;
+  await rejected;
+  assert.deepEqual(await f.control.management(), { includeBackground: true });
+  assert.equal((await f.store.read()).stops[0]!.state, "stopping");
+});
+
+test("existing saved state migrates to excluding background conversations", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "fya-management-migration-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const path = join(directory, "state.json");
+  await writeFile(path, JSON.stringify({ version: 1, revision: 4, owners: [], stops: [], stoppedIds: [] }));
+  const control = createControl(createFileStore(path));
+  assert.deepEqual(await control.management(), { includeBackground: false });
 });

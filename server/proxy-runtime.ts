@@ -51,6 +51,7 @@ const SnapshotSchema = z.object({
   backgroundTasks: z.number().int().nonnegative().default(0),
   sessionCrons: z.number().int().nonnegative().nullable().optional(),
   releaseSupported: z.boolean(),
+  scheduleSupported: z.boolean().optional(),
   unavailableReason: z.string().max(500).optional(),
   nativeMemoryBytes: z.number().nonnegative().nullable().optional(),
   nativeMemoryKind: z.enum(["pss", "rss"]).optional(),
@@ -310,6 +311,7 @@ export function createProxyRuntime(options: {
               throw new Error("Provider mismatch");
             const view = await inspect(record);
             const absent = view.phase === "released";
+            const scheduleSupported = view.scheduleSupported ?? view.releaseSupported;
             if (windows && !absent && view.nativePid && view.nativeMemoryBytes == null)
               view.nativeMemoryBytes = await nativeMemory(record, view.nativePid);
             const working =
@@ -335,11 +337,13 @@ export function createProxyRuntime(options: {
               memoryBytes: absent ? 0 : (view.nativeMemoryBytes ?? null),
               releasable:
                 !absent && view.releaseSupported && view.phase === "running",
+              schedulable:
+                !absent && scheduleSupported && view.phase === "running",
               unavailableReason: view.releaseSupported
                 ? null
                 : (view.unavailableReason ??
                   "This provider's process control is not yet available."),
-              controlStatus: view.releaseSupported
+              controlStatus: view.releaseSupported || scheduleSupported
                 ? "available"
                 : "unsupported",
             } satisfies Runtime;

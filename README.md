@@ -6,11 +6,11 @@ It helps when many conversations stay open: each one keeps its CLI process runni
 
 ![Free Your Agents screen with process memory totals, status filters and open conversations](assets/free-your-agents.png)
 
-*Process memory totals, status filters and every open conversation on the host.*
+*Process memory totals, status filters and managed conversation tabs on the host.*
 
 ## What you can do
 
-- **See where memory goes.** Every open conversation across the windows and devices connected to the host, with its provider, status and process memory, plus totals. Sort by memory to find the largest.
+- **See where memory goes.** Managed conversation tabs across the windows and devices connected to the host, with their provider, status and process memory, plus totals. Sort by memory to find the largest.
 - **Find what you can free.** Filter by **Idle**, **Working**, **No process** or **Unknown**, or search by title and workspace.
 - **Stop now or later.** Stop an idle process immediately, or schedule a one-time stop for one conversation (1 hour by default, from 15 minutes to 7 days).
 - **Let work finish first.** A stop waits while the agent is responding, waiting for permission, or running background tasks, goals or scheduled activity.
@@ -47,6 +47,8 @@ To check that it works, start a new conversation and wait for the first reply. T
 
 Click **Control** on a conversation to stop it now, or to schedule, update or cancel a stop. A busy agent offers **Stop when finished…** instead.
 
+You can schedule, update or cancel a stop while an agent is working. The timer starts when you save the schedule. If work finishes early, the process stays until the scheduled time; if work is still running then, the stop waits for a safe stopping point. Background tasks and pending permissions also keep the process protected.
+
 ![Process control dialog for one conversation, with schedule presets and a stop button](assets/stop-menu.png)
 
 After a stop, the conversation and its tab stay open, and its status becomes **Process stopped**. Send a message to resume the same session.
@@ -54,6 +56,8 @@ After a stop, the conversation and its tab stay open, and its status becomes **P
 ![Open conversations in idle and stopped states, one with a stop scheduled in two hours](assets/conversations.png)
 
 Each conversation has exactly one status, so the status counts add up to **All**. Filters combine with OR.
+
+Only conversations opened as tabs are managed. Mobile sheets are excluded. Conversations in background workspaces are excluded by default; turn on **Include background conversations** in **Settings → Plugins → free-your-agents → Settings** to include their open tabs. This setting applies to every window and device connected to that host. Turning it off removes those conversations from the list and totals and cancels their pending stops. Turning it back on does not restore cancelled stops. Background tasks inside an ordinary conversation still keep its process protected.
 
 ## How it works and data access
 
@@ -63,7 +67,7 @@ Paseo v0.11 has no public plugin API to release an idle provider process without
 - **Bridge.** The bridge (about 20 MB) stays running after a stop to keep the conversation connected. It is not counted in the process totals.
 - **Memory.** On Linux, the native process tree's PSS, or an RSS estimate when PSS is unavailable. On Windows, its working set. The two are not directly comparable.
 - **What it reads.** Conversation titles, providers and workspaces through Paseo's API; open tab IDs from the Paseo app windows; process memory from the operating system. Open tabs are read through a read-only adapter for the app's internals until Paseo offers a public API.
-- **What it stores.** Schedules, open-tab lists and the original launch commands in the plugin's `plugin-data` directory. After a stop, long Codex histories are replayed from temporary files encrypted with a key kept only in the bridge's memory, and deleted on resume or exit. On Windows, Paseo force-closes a conversation's processes when it is archived; the next Codex conversation then deletes its unreadable files.
+- **What it stores.** Management settings, schedules, open-tab lists and the original launch commands in the plugin's `plugin-data` directory. After a stop, long Codex histories are replayed from temporary files encrypted with a key kept only in the bridge's memory, and deleted on resume or exit. On Windows, Paseo force-closes a conversation's processes when it is archived; the next Codex conversation then deletes its unreadable files.
 - **Network.** The plugin makes no network requests of its own. The bridge talks to Paseo and the agent CLIs over local sockets or named pipes; the CLIs reach their providers as usual.
 - **Safety.** When the plugin cannot confirm that it owns a process, or does not recognize a CLI's protocol, it never stops that process.
 
