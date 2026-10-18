@@ -23,6 +23,7 @@ export function createBackend(
 ) {
   let paseo: Paseo | null = null,
     metadata: ReturnType<typeof createConversationMetadata> | null = null;
+  let foregroundMetadata: ReturnType<typeof createConversationMetadata> | null = null;
   let official: RuntimeApi | null = null,
     usingCompatibility = false,
     ready: Promise<unknown> = Promise.resolve(),
@@ -66,6 +67,9 @@ export function createBackend(
     if (!paseo) {
       paseo = api;
       metadata = createConversationMetadata({ agents: api.agents });
+      // Let the host classify workspace visibility. Older hosts have no
+      // background workspaces and ignore this additive false flag.
+      foregroundMetadata = createConversationMetadata({ agents: api.agents, includeBackground: false });
       if (controlSupported)
         for (const provider of ["codex", "claude"] as const)
           setups.set(
@@ -137,6 +141,10 @@ export function createBackend(
   };
   return {
     attach,
+    async managedAgentIds(agentIds: string[]) {
+      if (!foregroundMetadata) throw new Error("Conversation visibility is not available yet.");
+      return (await foregroundMetadata(agentIds)).map((entry) => entry.agentId);
+    },
     async status() {
       await defaults;
       return status();

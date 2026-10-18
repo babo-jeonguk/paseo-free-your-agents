@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { z } from "zod";
-import { StopSchema } from "../shared/model";
+import { ManagementSchema, StopSchema } from "../shared/model";
 
 export const OwnerSchema = z.object({
   id: z.string(),
@@ -16,6 +16,7 @@ export const OwnerSchema = z.object({
 export const StateSchema = z.object({
   version: z.literal(1),
   revision: z.number().int().nonnegative(),
+  management: ManagementSchema.default({ includeBackground: false }),
   owners: z.array(OwnerSchema),
   stops: z.array(StopSchema),
   stoppedIds: z.array(z.string()),
@@ -27,7 +28,7 @@ export interface StateStore {
 }
 
 export function emptyState(): State {
-  return { version: 1, revision: 0, owners: [], stops: [], stoppedIds: [] };
+  return { version: 1, revision: 0, management: { includeBackground: false }, owners: [], stops: [], stoppedIds: [] };
 }
 
 export function createFileStore(

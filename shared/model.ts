@@ -1,5 +1,10 @@
 import { z } from "zod";
 
+export const ManagementSchema = z.object({
+  includeBackground: z.boolean().default(false),
+});
+export type Management = z.infer<typeof ManagementSchema>;
+
 export const RuntimeSchema = z.object({
   agentId: z.string(),
   title: z.string(),

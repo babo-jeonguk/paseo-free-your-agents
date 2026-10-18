@@ -86,3 +86,19 @@ test("failed or looping metadata pagination never installs a partial cache and c
   );
   assert.equal(calls, 5, "The missing conversation is also looked up among archived ones");
 });
+
+test("foreground lookup leaves background visibility to the host, including archived tabs", async () => {
+  const calls: unknown[] = [];
+  const read = createConversationMetadata({
+    includeBackground: false,
+    agents: agents(async (options) => {
+      calls.push(options);
+      return page(options?.filter?.includeArchived ? ["foreground", "archived"] : ["foreground"]);
+    }),
+  });
+  assert.deepEqual((await read(["foreground", "background", "archived"])).map((entry) => entry.agentId), ["foreground", "archived"]);
+  assert.deepEqual(calls, [
+    { includeBackground: false, filter: { includeArchived: false }, page: { limit: 200 } },
+    { includeBackground: false, filter: { includeArchived: true }, page: { limit: 200 } },
+  ]);
+});

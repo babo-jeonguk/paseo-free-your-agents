@@ -7,6 +7,7 @@ import type { ConversationMetadata } from "./proxy-runtime";
 // here because that also enables additional host observation producers.
 export function createConversationMetadata(input: {
   agents: Pick<PluginHandlerContext["paseo"]["agents"], "list">;
+  includeBackground?: boolean;
   now?: () => number;
   cacheMs?: number;
 }) {
@@ -26,7 +27,7 @@ export function createConversationMetadata(input: {
       // declaration predates that optional wire flag. Keep it additive so older
       // hosts can ignore it without enabling a provider/timeline observation.
       const options = {
-        includeBackground: true,
+        includeBackground: input.includeBackground ?? true,
         filter: { includeArchived },
         page: { limit: 200, ...(cursor ? { cursor } : {}) },
       };
