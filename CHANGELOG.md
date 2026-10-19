@@ -1,0 +1,25 @@
+# Changelog
+
+## 1.0.1 — 2026-10-19
+
+### Added
+
+- Schedule, update or cancel a stop while Claude is working. The timer starts when the schedule is saved. Finishing early does not stop the process early; work that continues past the deadline keeps the process running until it is safe to stop. This also works on Paseo 0.11. ([#5](https://github.com/babo-jeonguk/paseo-free-your-agents/pull/5))
+- **Include background conversations** in the plugin's Settings. It is off by default and applies to every window and device connected to the host. Enabling it includes open tabs in background workspaces. ([#4](https://github.com/babo-jeonguk/paseo-free-your-agents/pull/4))
+
+### Changed
+
+- Manage conversations opened as tabs only; mobile conversation sheets are excluded. Background workspaces are excluded from the list, memory totals and process controls unless enabled in Settings. Turning the setting off cancels their pending stops without stopping their processes; turning it back on does not restore those stops. ([#4](https://github.com/babo-jeonguk/paseo-free-your-agents/pull/4))
+- Omit the `--no-maglev` workaround on Paseo 0.12 and later, where the upstream validator fix is included. Keep it on Paseo 0.11 and hosts whose version cannot be determined. ([#4](https://github.com/babo-jeonguk/paseo-free-your-agents/pull/4))
+
+### Upgrade notes
+
+- Paseo 0.11 remains supported. The validated agent CLI versions are unchanged: Codex 0.162.1 and 0.163.0, and Claude 2.1.299 and 2.1.301.
+- After updating, restart the Paseo daemon when no agent is working so existing conversations use the updated bridge. New conversations use it immediately.
+- Existing installations default to excluding background workspaces. Pending stops for conversations outside the managed scope are cancelled when the scope is reconciled. Enable **Include background conversations** and schedule them again if needed.
+
+## 1.0.0 — 2026-10-16
+
+First stable release: memory totals and sorting, status filters, immediate and scheduled stops, and same-session resume for Codex and Claude.
+
+[Release notes](https://github.com/babo-jeonguk/paseo-free-your-agents/releases/tag/v1.0.0).
