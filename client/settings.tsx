@@ -3,7 +3,55 @@ import { ScrollView } from "@getpaseo/plugin/client/react-native";
 import { SettingsAction, SettingsCard, SettingsRow, SettingsSection, SettingsSwitch } from "@getpaseo/plugin/client/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Text } from "react-native";
-import { setupChangeRpc, setupStatusRpc } from "../shared/rpc";
+import { managementChangeRpc, managementReadRpc, setupChangeRpc, setupStatusRpc } from "../shared/rpc";
+
+function ManagementSettings({ theme, host }: Pick<PluginSurfaceProps, "theme" | "host">) {
+  const read = useRpc(managementReadRpc);
+  const change = useRpc(managementChangeRpc);
+  const queryClient = useQueryClient();
+  const queryKey = ["free-your-agents", "management", host.id];
+  const settings = useQuery({ queryKey, queryFn: () => read({}), refetchInterval: 15_000, retry: 1 });
+  const mutation = useMutation({
+    mutationFn: change,
+    onMutate: () => queryClient.cancelQueries({ queryKey }),
+    onSuccess: async (result) => {
+      queryClient.setQueryData(queryKey, result);
+      await queryClient.invalidateQueries({ queryKey: ["free-your-agents", "inventory", host.id] });
+    },
+    onError: () => queryClient.invalidateQueries({ queryKey }),
+  });
+  const muted = { color: theme.colors.foregroundMuted, fontSize: 13, lineHeight: 20 };
+  return (
+    <SettingsSection title="Managed conversations">
+      <Text style={muted}>
+        Only conversations opened as tabs are managed. Mobile sheets are excluded.
+      </Text>
+      {settings.isPending ? (
+        <Text style={muted}>Loading managed conversation settings…</Text>
+      ) : settings.isError ? (
+        <SettingsCard>
+          <SettingsAction
+            label="Managed conversation settings could not be read"
+            hint={settings.error.message}
+            actionLabel="Retry"
+            onPress={() => void settings.refetch()}
+          />
+        </SettingsCard>
+      ) : (
+        <SettingsCard>
+          <SettingsSwitch
+            label="Include background conversations"
+            hint="Include open tabs in background workspaces. Turning this off cancels their pending stops."
+            value={settings.data.includeBackground}
+            disabled={mutation.isPending}
+            error={mutation.isError ? mutation.error.message : null}
+            onValueChange={(includeBackground) => mutation.mutate({ includeBackground })}
+          />
+        </SettingsCard>
+      )}
+    </SettingsSection>
+  );
+}
 
 export function ProcessSettingsScreen({ theme, host }: PluginSurfaceProps) {
   const status = useRpc(setupStatusRpc);
@@ -46,6 +94,7 @@ export function ProcessSettingsScreen({ theme, host }: PluginSurfaceProps) {
     <ScrollView
       contentContainerStyle={{ padding: 24, gap: 16, maxWidth: 600, width: "100%", alignSelf: "center" }}
     >
+      <ManagementSettings theme={theme} host={host} />
       <SettingsSection title="Process controls">
         {setup.isPending ? (
           <Text style={muted}>Loading process control setup…</Text>

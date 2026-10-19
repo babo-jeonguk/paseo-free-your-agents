@@ -24,10 +24,11 @@ test("private tab adapter waits for hydration and ownership, isolates hosts, and
       ]),
       "two:other": pane([{ kind: "agent", agentId: "other-host" }]),
     },
-    sheetByWorkspace: {
-      "one:preview": {
-        tab: { target: { kind: "agent", agentId: "preview-only" } },
-      },
+    sheetsByWorkspace: {
+      "one:preview": [
+        { tab: { target: { kind: "agent", agentId: "preview-only" } } },
+        { tab: { target: { kind: "provider_subagent", parentAgentId: "sheet-parent", subagentId: "sheet-child" } } },
+      ],
     },
   };
   const listeners = new Set<() => void>(),

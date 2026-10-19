@@ -3,6 +3,7 @@ import type { z } from "zod";
 import type { changeStopRpc, publishTabsRpc } from "../shared/rpc";
 import type {
   Inventory,
+  Management,
   Row,
   Runtime,
   RuntimeApi,
@@ -18,6 +19,7 @@ const FRESH_MS = 45_000;
 export function createControl(store: StateStore, now: () => number = Date.now) {
   let state: State | null = null;
   let api: RuntimeApi | null = null;
+  let selectForeground: (ids: string[]) => Promise<string[]> = async (ids) => ids;
   let tail: Promise<unknown> = Promise.resolve();
   // Freshness is in memory: after a restart every owner is stale until it reports.
   const seen = new Map<string, number>();
@@ -71,13 +73,18 @@ export function createControl(store: StateStore, now: () => number = Date.now) {
       unavailableReason: "Runtime status is unavailable.",
     };
   }
+  async function managedMembership(value: State) {
+    const open = membership(value);
+    if (value.management.includeBackground || open.size === 0) return open;
+    const foreground = new Set(await selectForeground([...open.keys()]));
+    return new Map([...open].filter(([id]) => foreground.has(id)));
+  }
   async function snapshots(
-    value: State,
+    open: Awaited<ReturnType<typeof managedMembership>>,
     onlyIds?: Iterable<string>,
   ): Promise<Map<string, Runtime>> {
     if (!api || !api.supported()) return new Map();
-    const ids = new Set(onlyIds ?? membership(value).keys());
-    if (!onlyIds) for (const stop of value.stops) ids.add(stop.agentId);
+    const ids = new Set([...(onlyIds ?? open.keys())].filter((id) => open.has(id)));
     if (ids.size === 0) return new Map();
     const entries = await api.snapshot({ agentIds: [...ids] });
     return new Map(entries.map((runtime) => [runtime.agentId, runtime]));
@@ -88,11 +95,11 @@ export function createControl(store: StateStore, now: () => number = Date.now) {
     // nothing. list() reconciles stopped rows, as it reads every row's status.
     if ((await current()).stops.length === 0) return;
     const value = structuredClone(await current());
+    const open = await managedMembership(value);
     const runtimes = await snapshots(
-      value,
+      open,
       new Set(value.stops.map((stop) => stop.agentId)),
     );
-    const open = membership(value);
     let changed = false;
     for (const stop of [...value.stops]) {
       const runtime = runtimes.get(stop.agentId);
@@ -176,8 +183,28 @@ export function createControl(store: StateStore, now: () => number = Date.now) {
     );
   }
   return {
-    attach(runtime: RuntimeApi | null) {
+    attach(runtime: RuntimeApi | null, foreground?: (ids: string[]) => Promise<string[]>) {
       api = runtime;
+      if (foreground) selectForeground = foreground;
+    },
+    management() {
+      return serialize(async () => ({ ...(await current()).management }));
+    },
+    changeManagement(input: Management) {
+      return serialize(async () => {
+        const value = structuredClone(await current());
+        value.management = { ...input };
+        const open = await managedMembership(value);
+        const excluded = value.stops.filter((stop) => !open.has(stop.agentId));
+        if (excluded.some((stop) => stop.state === "stopping"))
+          throw new Error("A stop result is not confirmed. Wait for it before excluding these conversations.");
+        // This shares the scheduler's lane: saving a narrower scope cannot
+        // acknowledge cancellation while a release is still in flight.
+        value.stops = value.stops.filter((stop) => open.has(stop.agentId));
+        value.stoppedIds = value.stoppedIds.filter((id) => open.has(id));
+        await save(value);
+        return { ...value.management };
+      });
     },
     register(ownerId: string) {
       return serialize(async () => {
@@ -242,8 +269,8 @@ export function createControl(store: StateStore, now: () => number = Date.now) {
       return serialize(async () => {
         let value = await current();
         const supported = api !== null && api.supported();
-        const runtimes = await snapshots(value);
-        const open = membership(value);
+        const open = await managedMembership(value);
+        const runtimes = await snapshots(open);
         const stoppedIds = stillStopped(value, runtimes, open);
         if (stoppedIds.length !== value.stoppedIds.length) {
           value = { ...value, stoppedIds };
@@ -295,12 +322,13 @@ export function createControl(store: StateStore, now: () => number = Date.now) {
           await save(value);
           return { changed: true, reason: null };
         }
-        if (!membership(value).has(input.agentId))
+        const open = await managedMembership(value);
+        if (!open.has(input.agentId))
           return {
             changed: false,
-            reason: "This conversation has no open tabs.",
+            reason: "This conversation is outside the managed open tabs.",
           };
-        const runtime = (await snapshots(value, [input.agentId])).get(
+        const runtime = (await snapshots(open, [input.agentId])).get(
           input.agentId,
         );
         if (

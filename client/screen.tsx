@@ -825,7 +825,7 @@ export function RuntimeScreen({
           <Text style={[styles.muted, { flexShrink: 1 }]}>
             {view.selected
               .map((id) => filters.find((filter) => filter.id === id)!.label)
-              .join(" OR ") || "All open conversations"}
+              .join(" OR ") || "All managed conversations"}
           </Text>
         </View>
         <View style={styles.panel}>
@@ -890,11 +890,11 @@ export function RuntimeScreen({
             <View style={styles.empty}>
               <Icon name="MemoryStick" size={28} color={theme.colors.foregroundMuted} />
               <Text style={styles.strong}>
-                {rows.length === 0 ? "No open conversations reported" : "No matching conversations"}
+                {rows.length === 0 ? "No managed conversations reported" : "No matching conversations"}
               </Text>
               <Text style={styles.muted}>
                 {rows.length === 0
-                  ? "Open a conversation in a connected Paseo window."
+                  ? "Open a conversation tab, or check which conversations are included in Settings."
                   : "No open conversations match your search and selected categories."}
               </Text>
               {view.query !== "" && (

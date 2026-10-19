@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createControl } from "./control";
@@ -528,4 +528,74 @@ test("periodic reports refresh freshness without rewriting state", async (t) => 
     await f.control.publish({ ownerId: "desktop", epoch, revision: 0, agentIds: ["b"] }),
     false,
   );
+});
+
+test("background management defaults off, gates server actions, and includes only open tabs when enabled", async (t) => {
+  const f = await setup(t);
+  const foreground = async (ids: string[]) => ids.filter((id) => id !== "b");
+  f.control.attach(f.api, foreground);
+  f.runtimes.set("b", { ...f.runtimes.get("a")!, agentId: "b" });
+  f.runtimes.set("closed", { ...f.runtimes.get("a")!, agentId: "closed" });
+  await f.owner("desktop", ["a", "b"]);
+  assert.deepEqual(await f.control.management(), { includeBackground: false });
+  assert.deepEqual((await f.control.list()).rows.map((row) => row.runtime.agentId), ["a"]);
+  const request = { agentId: "b", expectedGeneration: "boot:1", expectedStopId: null, action: "now" as const };
+  assert.equal((await f.control.change(request)).changed, false);
+  assert.deepEqual(f.releases, []);
+
+  await f.control.changeManagement({ includeBackground: true });
+  assert.deepEqual((await f.control.list()).rows.map((row) => row.runtime.agentId), ["a", "b"]);
+  assert.equal((await f.control.change({ ...request, agentId: "closed" })).changed, false);
+  const restarted = createControl(f.store);
+  restarted.attach(f.api, foreground);
+  assert.deepEqual(await restarted.management(), { includeBackground: true });
+  assert.deepEqual((await restarted.list()).rows.map((row) => row.runtime.agentId), ["a", "b"]);
+
+  await f.control.change({ ...request, action: "schedule", hours: 1 });
+  await f.control.changeManagement({ includeBackground: false });
+  assert.equal((await f.store.read()).stops.length, 0);
+  f.advance(3_600_000);
+  await f.control.tick();
+  assert.deepEqual(f.releases, []);
+  await f.control.changeManagement({ includeBackground: true });
+  assert.equal((await f.control.list()).rows.find((row) => row.runtime.agentId === "b")!.stop, null);
+});
+
+test("narrowing management waits for in-flight release and refuses an unconfirmed stop", async (t) => {
+  const f = await setup(t);
+  let entered!: () => void, finish!: () => void;
+  const releasing = new Promise<void>((resolve) => { entered = resolve; });
+  const gate = new Promise<void>((resolve) => { finish = resolve; });
+  f.control.attach({
+    ...f.api,
+    releaseIfIdle: async () => {
+      entered();
+      await gate;
+      throw new Error("Fixture timeout after admission");
+    },
+  }, async () => []);
+  await f.owner("desktop", ["a"]);
+  await f.control.changeManagement({ includeBackground: true });
+  const stop = f.control.change({ agentId: "a", expectedGeneration: "boot:1", expectedStopId: null, action: "now" });
+  await releasing;
+  let settled = false;
+  const narrower = f.control.changeManagement({ includeBackground: false });
+  void narrower.then(() => { settled = true; }, () => { settled = true; });
+  await new Promise(setImmediate);
+  assert.equal(settled, false);
+  const rejected = assert.rejects(narrower, /not confirmed/);
+  finish();
+  await stop;
+  await rejected;
+  assert.deepEqual(await f.control.management(), { includeBackground: true });
+  assert.equal((await f.store.read()).stops[0]!.state, "stopping");
+});
+
+test("existing saved state migrates to excluding background conversations", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "fya-management-migration-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const path = join(directory, "state.json");
+  await writeFile(path, JSON.stringify({ version: 1, revision: 4, owners: [], stops: [], stoppedIds: [] }));
+  const control = createControl(createFileStore(path));
+  assert.deepEqual(await control.management(), { includeBackground: false });
 });

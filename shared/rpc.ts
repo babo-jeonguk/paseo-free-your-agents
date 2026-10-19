@@ -1,6 +1,17 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
-import { HoursSchema, InventorySchema } from "./model";
+import { HoursSchema, InventorySchema, ManagementSchema } from "./model";
+
+export const managementReadRpc = defineRpc({
+  name: "free-your-agents.management.read",
+  input: z.object({}),
+  output: ManagementSchema,
+});
+export const managementChangeRpc = defineRpc({
+  name: "free-your-agents.management.change",
+  input: ManagementSchema,
+  output: ManagementSchema,
+});
 
 export const SetupSchema = z.object({
   official: z.boolean(),
