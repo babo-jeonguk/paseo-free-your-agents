@@ -2,11 +2,13 @@ import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { useRpc } from "@getpaseo/plugin/client";
 import { Icon, Modal, ScrollView, TextInput } from "@getpaseo/plugin/client/react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { memo, useCallback, useEffect, useMemo, useReducer, useRef, type Ref } from "react";
+import { memo, useCallback, useEffect, useMemo, useReducer, useRef, useState, type Ref } from "react";
 import { ActivityIndicator, Platform, Pressable, Text, View } from "react-native";
 import type { Row } from "../shared/model";
 import { HoursSchema } from "../shared/model";
 import { changeStopRpc, listRpc } from "../shared/rpc";
+import { BulkControls } from "./bulk-control";
+import { SelectionCheckbox, useTouchSelection } from "./selection";
 import {
   controlNote,
   filters,
@@ -30,6 +32,7 @@ type Dialog = { kind: "menu" | "stop"; row: Row } | null;
 interface ViewState {
   query: string;
   selected: Filter[];
+  checked: string[];
   sort: MemorySort;
   // Set only by a press, so polling re-sorts rows without announcing.
   sortNotice: string;
@@ -43,6 +46,8 @@ type Action =
   | { type: "query"; value: string }
   | { type: "filter"; value: Filter | "all" }
   | { type: "sort" }
+  | { type: "check"; id: string }
+  | { type: "checks"; ids: string[] }
   | { type: "dialog"; value: Dialog }
   | { type: "hours"; value: string }
   | { type: "error"; value: string | null }
@@ -51,15 +56,20 @@ type Action =
 function reducer(state: ViewState, action: Action): ViewState {
   switch (action.type) {
     case "query":
-      return { ...state, query: action.value };
+      return { ...state, query: action.value, checked: [] };
     case "filter": {
       const value = action.value;
-      if (value === "all") return { ...state, selected: [] };
+      if (value === "all") return { ...state, selected: [], checked: [] };
       const selected = state.selected.includes(value)
         ? state.selected.filter((id) => id !== value)
         : [...state.selected, value];
-      return { ...state, selected };
+      return { ...state, selected, checked: [] };
     }
+    case "check":
+      return { ...state, checked: state.checked.includes(action.id)
+        ? state.checked.filter(id => id !== action.id) : [...state.checked, action.id] };
+    case "checks":
+      return { ...state, checked: action.ids };
     case "sort": {
       const sort = nextMemorySort(state.sort);
       const sortNotice = sort
@@ -469,6 +479,10 @@ const ConversationRow = memo(function ConversationRow({
   now,
   open,
   menu,
+  checked,
+  selecting,
+  touchSelection,
+  check,
 }: {
   row: Row;
   compact: boolean;
@@ -477,10 +491,43 @@ const ConversationRow = memo(function ConversationRow({
   now: number;
   open?: (id: string) => void;
   menu(row: Row): void;
+  checked: boolean;
+  selecting: boolean;
+  touchSelection: boolean;
+  check(id: string): void;
 }) {
+  const [hovered, setHovered] = useState(false);
+  const [checkboxFocused, setCheckboxFocused] = useState(false);
   const runtime = row.runtime;
+  const Container = touchSelection ? Pressable : View;
+  const showSelection = selecting || checkboxFocused || (!touchSelection && hovered);
   return (
-    <View style={styles.row} testID={`conversation-${runtime.agentId}`}>
+    <Container
+      style={[styles.row, compact && { paddingLeft: showSelection ? 68 : 16 }, checked && { backgroundColor: theme.colors.surface2 }]}
+      testID={`conversation-${runtime.agentId}`}
+      onPointerEnter={() => setHovered(true)}
+      onPointerLeave={() => setHovered(false)}
+      {...(touchSelection ? {
+        accessible: false,
+        focusable: false,
+        delayLongPress: 500,
+        onLongPress: () => { if (!checked) check(runtime.agentId); },
+        onPress: () => { if (selecting) check(runtime.agentId); },
+      } : {})}
+    >
+      <View style={compact
+        ? { position: "absolute", left: 8, top: 16 }
+        : !showSelection ? { position: "absolute", left: 16 } : undefined}>
+        <SelectionCheckbox
+          label={`Select conversation: ${runtime.title}`}
+          checked={checked}
+          onPress={() => check(runtime.agentId)}
+          theme={theme}
+          revealed={selecting || (!touchSelection && hovered)}
+          inertWhenHidden={touchSelection}
+          onFocusChange={setCheckboxFocused}
+        />
+      </View>
       <View style={styles.session}>
         <View style={styles.line}>
           <Text style={[styles.strong, { flexShrink: 1 }]}>{runtime.title}</Text>
@@ -536,7 +583,7 @@ const ConversationRow = memo(function ConversationRow({
           <Text style={styles.strong}>Control</Text>
         </Pressable>
       </View>
-    </View>
+    </Container>
   );
 });
 
@@ -551,6 +598,7 @@ export function RuntimeScreen({
   const [view, dispatch] = useReducer(reducer, {
     query: "",
     selected: [],
+    checked: [],
     sort: null,
     sortNotice: "",
     dialog: null,
@@ -595,6 +643,20 @@ export function RuntimeScreen({
   });
   const rows = query.data?.rows ?? [];
   const shown = sortByMemory(visible(rows, view.selected, view.query), view.sort);
+  const checkedIds = new Set(view.checked);
+  const selectedRows = shown.filter(row => checkedIds.has(row.runtime.agentId));
+  const touchSelection = useTouchSelection();
+  const selectionRef = useRef<View>(null);
+  const [selectAllFocused, setSelectAllFocused] = useState(false);
+  useEffect(() => { dispatch({ type: "checks", ids: [] }); }, [host.id]);
+  // Remove vanished IDs so closing and reopening a tab cannot silently reselect it.
+  useEffect(() => {
+    if (!query.data) return;
+    const present = new Set(visible(query.data.rows, view.selected, view.query).map(row => row.runtime.agentId));
+    const retained = view.checked.filter(id => present.has(id));
+    if (retained.length !== view.checked.length) dispatch({ type: "checks", ids: retained });
+  }, [query.data, view.checked, view.selected, view.query]);
+  const check = useCallback((id: string) => dispatch({ type: "check", id }), []);
   const sortLabels = memorySortLabels[view.sort ?? "none"];
   const sortTitle = layout.compact ? "Sort by memory" : "Memory";
   const scheduled = rows.filter(pendingStop).length;
@@ -699,7 +761,23 @@ export function RuntimeScreen({
   }
   return (
     <>
-      <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.content}
+        {...(Platform.OS === "web" ? { onKeyDown: (event: {
+          key: string; preventDefault(): void;
+          target: { closest?(selector: string): unknown };
+        }) => {
+          // Modal events can bubble through this scroll view, including portals.
+          // Let the dialog own Escape so it can go back or finish pending work.
+          if (event.target.closest?.('dialog, [role="dialog"], [aria-modal="true"]')) return;
+          if (event.key === "Escape" && !view.dialog && selectedRows.length) {
+            event.preventDefault();
+            dispatch({ type: "checks", ids: [] });
+            selectionRef.current?.focus();
+          }
+        } } : {})}
+      >
         <View style={styles.header}>
           <View style={{ gap: 5, flex: 1 }}>
             <Text accessibilityRole="header" style={styles.title}>
@@ -828,8 +906,44 @@ export function RuntimeScreen({
               .join(" OR ") || "All managed conversations"}
           </Text>
         </View>
+        <BulkControls
+          key={host.id}
+          rows={selectedRows}
+          theme={theme}
+          supported={query.data?.supported === true}
+          queryKey={queryKey}
+          clear={() => dispatch({ type: "checks", ids: [] })}
+          focusSelection={() => selectionRef.current?.focus()}
+          complete={(result, action) => {
+            const succeeded = new Set(result.succeeded);
+            dispatch({ type: "checks", ids: view.checked.filter(id => !succeeded.has(id)) });
+            const operation = action === "schedule" ? "Stops scheduled" : action === "cancel" ? "Schedules cancelled" : "Stop requests accepted";
+            dispatch({ type: "success", value: `${operation}: ${result.succeeded.length}. Failed: ${result.failed.length}. Skipped: ${result.skipped.length}.` });
+          }}
+        />
+        {touchSelection && selectedRows.length === 0 && shown.length > 0 && (
+          <Text style={styles.muted}>Touch and hold a conversation to select multiple.</Text>
+        )}
         <View style={styles.panel}>
           <View style={styles.tableHeader}>
+            <View style={[
+              { flexDirection: "row", alignItems: "center", marginVertical: -12, gap: 4 },
+              touchSelection && selectedRows.length === 0 && !selectAllFocused && { position: "absolute", left: 16 },
+            ]}>
+              <SelectionCheckbox
+                buttonRef={selectionRef}
+                label="Select all visible conversations"
+                checked={selectedRows.length === 0 ? false : selectedRows.length === shown.length ? true : "mixed"}
+                disabled={shown.length === 0}
+                theme={theme}
+                revealed={!touchSelection || selectedRows.length > 0}
+                inertWhenHidden={touchSelection}
+                onFocusChange={setSelectAllFocused}
+                onPress={() => dispatch({ type: "checks", ids: selectedRows.length === shown.length
+                  ? [] : shown.map(row => row.runtime.agentId) })}
+              />
+              {layout.compact && (!touchSelection || selectedRows.length > 0) && <Text style={styles.muted}>Select all</Text>}
+            </View>
             {[
               { label: "Session", style: styles.session },
               { label: "Agent", style: styles.agent },
@@ -884,6 +998,10 @@ export function RuntimeScreen({
               now={row.stop?.state === "scheduled" ? view.now : 0}
               open={open}
               menu={menu}
+              checked={checkedIds.has(row.runtime.agentId)}
+              selecting={selectedRows.length > 0}
+              touchSelection={touchSelection}
+              check={check}
             />
           ))}
           {!query.isPending && shown.length === 0 && (
