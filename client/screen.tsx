@@ -510,7 +510,7 @@ const ConversationRow = memo(function ConversationRow({
       {...(touchSelection ? {
         accessible: false,
         focusable: false,
-        delayLongPress: 500,
+        delayLongPress: 350,
         onLongPress: () => { if (!checked) check(runtime.agentId); },
         onPress: () => { if (selecting) check(runtime.agentId); },
       } : {})}
