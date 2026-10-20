@@ -501,6 +501,17 @@ const ConversationRow = memo(function ConversationRow({
   const runtime = row.runtime;
   const Container = touchSelection ? Pressable : View;
   const showSelection = selecting || checkboxFocused || (!touchSelection && hovered);
+  const checkbox = (
+    <SelectionCheckbox
+      label={`Select conversation: ${runtime.title}`}
+      checked={checked}
+      onPress={() => check(runtime.agentId)}
+      theme={theme}
+      revealed={selecting || (!touchSelection && hovered)}
+      inertWhenHidden={touchSelection}
+      onFocusChange={setCheckboxFocused}
+    />
+  );
   return (
     <Container
       style={[styles.row, compact && { paddingLeft: showSelection ? 68 : 16 }, checked && { backgroundColor: theme.colors.surface2 }]}
@@ -515,39 +526,31 @@ const ConversationRow = memo(function ConversationRow({
         onPress: () => { if (selecting) check(runtime.agentId); },
       } : {})}
     >
-      <View style={compact
-        ? { position: "absolute", left: 8, top: 16 }
-        : !showSelection ? { position: "absolute", left: 16 } : undefined}>
-        <SelectionCheckbox
-          label={`Select conversation: ${runtime.title}`}
-          checked={checked}
-          onPress={() => check(runtime.agentId)}
-          theme={theme}
-          revealed={selecting || (!touchSelection && hovered)}
-          inertWhenHidden={touchSelection}
-          onFocusChange={setCheckboxFocused}
-        />
-      </View>
+      {compact && <View style={{ position: "absolute", left: 8, top: 16 }}>{checkbox}</View>}
       <View style={styles.session}>
-        <View style={styles.line}>
-          <Text style={[styles.strong, { flexShrink: 1 }]}>{runtime.title}</Text>
-          {open && (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Open conversation: ${runtime.title}`}
-              onPress={() => open(runtime.agentId)}
-              style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
-            >
-              <Icon name="ArrowUpRight" size={16} color={theme.colors.foregroundMuted} />
-            </Pressable>
-          )}
+        {!compact && <View style={{ position: "absolute", left: 0, top: 0, zIndex: 1 }}>{checkbox}</View>}
+        {/* Keep the five column widths fixed; only inset content inside Session. */}
+        <View style={{ gap: 4, paddingLeft: !compact && showSelection ? 52 : 0 }}>
+          <View style={styles.line}>
+            <Text style={[styles.strong, { flexShrink: 1 }]}>{runtime.title}</Text>
+            {open && (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Open conversation: ${runtime.title}`}
+                onPress={() => open(runtime.agentId)}
+                style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
+              >
+                <Icon name="ArrowUpRight" size={16} color={theme.colors.foregroundMuted} />
+              </Pressable>
+            )}
+          </View>
+          <Text style={styles.muted}>
+            {runtime.workspace || "Workspace unavailable"} · {row.ownerCount}{" "}
+            {row.ownerCount === 1 ? "window" : "windows"}
+          </Text>
+          {row.syncPending && <Text style={styles.muted}>Sync pending</Text>}
+          {row.hasSharedTabs && <Text style={styles.muted}>Includes shared subagent tabs</Text>}
         </View>
-        <Text style={styles.muted}>
-          {runtime.workspace || "Workspace unavailable"} · {row.ownerCount}{" "}
-          {row.ownerCount === 1 ? "window" : "windows"}
-        </Text>
-        {row.syncPending && <Text style={styles.muted}>Sync pending</Text>}
-        {row.hasSharedTabs && <Text style={styles.muted}>Includes shared subagent tabs</Text>}
       </View>
       <View style={styles.agent}>
         {compact && <Text style={styles.muted}>Agent</Text>}
@@ -925,27 +928,32 @@ export function RuntimeScreen({
           <Text style={styles.muted}>Touch and hold a conversation to select multiple.</Text>
         )}
         <View style={styles.panel}>
-          <View style={styles.tableHeader}>
-            <View style={[
-              { flexDirection: "row", alignItems: "center", marginVertical: -12, gap: 4 },
-              touchSelection && selectedRows.length === 0 && !selectAllFocused && { position: "absolute", left: 16 },
-            ]}>
-              <SelectionCheckbox
-                buttonRef={selectionRef}
-                label="Select all visible conversations"
-                checked={selectedRows.length === 0 ? false : selectedRows.length === shown.length ? true : "mixed"}
-                disabled={shown.length === 0}
-                theme={theme}
-                revealed={!touchSelection || selectedRows.length > 0}
-                inertWhenHidden={touchSelection}
-                onFocusChange={setSelectAllFocused}
-                onPress={() => dispatch({ type: "checks", ids: selectedRows.length === shown.length
-                  ? [] : shown.map(row => row.runtime.agentId) })}
-              />
-              {layout.compact && (!touchSelection || selectedRows.length > 0) && <Text style={styles.muted}>Select all</Text>}
+          <View style={styles.tableHeader} testID="process-table-header">
+            <View style={layout.compact
+              ? touchSelection && selectedRows.length === 0 && !selectAllFocused
+                ? { position: "absolute", left: 16 } : undefined
+              : styles.session}>
+              <View style={[
+                { flexDirection: "row", alignItems: "center", marginVertical: -12, gap: 4 },
+                !layout.compact && { position: "absolute", left: 0, top: 0 },
+              ]}>
+                <SelectionCheckbox
+                  buttonRef={selectionRef}
+                  label="Select all visible conversations"
+                  checked={selectedRows.length === 0 ? false : selectedRows.length === shown.length ? true : "mixed"}
+                  disabled={shown.length === 0}
+                  theme={theme}
+                  revealed={!touchSelection || selectedRows.length > 0}
+                  inertWhenHidden={touchSelection}
+                  onFocusChange={setSelectAllFocused}
+                  onPress={() => dispatch({ type: "checks", ids: selectedRows.length === shown.length
+                    ? [] : shown.map(row => row.runtime.agentId) })}
+                />
+                {layout.compact && (!touchSelection || selectedRows.length > 0) && <Text style={styles.muted}>Select all</Text>}
+              </View>
+              {!layout.compact && <Text style={[styles.muted, { marginLeft: 52 }]}>Session</Text>}
             </View>
             {[
-              { label: "Session", style: styles.session },
               { label: "Agent", style: styles.agent },
               { label: "Status", style: styles.status },
               { label: "Memory", style: styles.memory },
