@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.0 — 2026-10-21
+
+### Added
+
+- Checkbox selection and bulk process controls for Codex and Claude conversations: schedule, update or cancel stops, or request a stop for the selection. ([#7](https://github.com/babo-jeonguk/paseo-free-your-agents/pull/7))
+- Selected conversation count and combined process memory.
+- Bulk operation progress and per-conversation results for successes, failures and skips.
+
 ## 1.0.1 — 2026-10-19
 
 ### Added
