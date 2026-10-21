@@ -13,6 +13,7 @@ It helps when many conversations stay open: each one keeps its CLI process runni
 - **See where memory goes.** Managed conversation tabs across the windows and devices connected to the host, with their provider, status and process memory, plus totals. Sort by memory to find the largest.
 - **Find what you can free.** Filter by **Idle**, **Working**, **No process** or **Unknown**, or search by title and workspace.
 - **Stop now or later.** Stop an idle process immediately, or schedule a one-time stop for one conversation (1 hour by default, from 15 minutes to 7 days).
+- **Control several conversations together.** Select conversations with checkboxes to schedule, update or cancel stops, or request a stop for the selection. See their combined process memory and the result for each conversation.
 - **Let work finish first.** A stop waits while the agent is responding, waiting for permission, or running background tasks, goals or scheduled activity.
 - **Pick up where you left off.** Send a message and the same session continues.
 
@@ -39,7 +40,7 @@ When the plugin first runs, it turns on process control for Codex and Claude. Th
 
 Restart the Paseo daemon after installing so that open conversations get process control too: use **Restart daemon** in the host's settings, or run `paseo daemon restart`. Choose a moment when no agent is working. The plugin never restarts the daemon itself.
 
-Updates work the same way. New conversations use the updated version right away; open ones keep the previous version until the daemon restarts.
+Updates that change the bridge work the same way. New conversations use the updated bridge right away; open ones keep the previous bridge until the daemon restarts. Interface-only updates leave existing bridges in place.
 
 To check that it works, start a new conversation and wait for the first reply. Then open **Free Your Agents** from the sidebar. The conversation shows **Idle** with its memory.
 
@@ -56,6 +57,20 @@ After a stop, the conversation and its tab stay open, and its status becomes **P
 ![Open conversations in idle and stopped states, one with a stop scheduled in two hours](assets/conversations.png)
 
 Each conversation has exactly one status, so the status counts add up to **All**. Filters combine with OR.
+
+### Control multiple conversations
+
+On desktop, hover a row or focus its checkbox with the keyboard to reveal selection. On touch screens, touch and hold a conversation to start selecting, then tap other rows to add or remove them. The header checkbox selects all conversations in the current search and filter results.
+
+The selection toolbar shows the selected count and combined process memory. Open **Control selected** to schedule or update stops with one duration, cancel pending schedules, or review and confirm a stop request. Each process's timer starts when its schedule is applied. Active work stays protected by the same checks used for individual controls.
+
+![Three selected conversations and their combined process memory](assets/bulk-selection.png)
+
+Changes are applied to each conversation separately. Progress and results show successes, failures and skips with their reasons; one failure does not prevent the remaining conversations from being processed. Failed and skipped conversations stay selected while they remain in the list, so you can review their current status before trying again.
+
+![Bulk process controls for the selected conversations](assets/bulk-control.png)
+
+Changing the search or status filters clears the selection. Memory sorting preserves it. Conversations removed from the list are deselected and are not automatically reselected if they return. Use **Clear selection**, or press **Escape** outside a dialog, to clear the selection. Checkboxes support Space and Enter.
 
 Only conversations opened as tabs are managed. Mobile sheets are excluded. Conversations in background workspaces are excluded by default; turn on **Include background conversations** in **Settings → Plugins → free-your-agents → Settings** to include their open tabs. This setting applies to every window and device connected to that host. Turning it off removes those conversations from the list and totals and cancels their pending stops. Turning it back on does not restore cancelled stops. Background tasks inside an ordinary conversation still keep its process protected.
 
@@ -97,6 +112,8 @@ npm run check           # bundle check, typecheck and tests
 ```
 
 Paseo installs Git plugins without a build step, so the bridge scripts are bundled into the committed `server/runtime-assets.generated.ts`. `npm run check` verifies it matches its sources.
+
+Releases use semantic versioning: backward-compatible feature additions increment the minor version, bug-fix-only releases increment the patch version, and incompatible public interface changes increment the major version.
 
 ## License
 

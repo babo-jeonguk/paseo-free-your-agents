@@ -2,11 +2,13 @@ Free Your Agents shows memory use for open Codex and Claude conversations in Pas
 
 The screen lists managed conversation tabs on the host, across windows and devices, with their status and process memory. Filter by Idle, Working, No process or Unknown, search by title and workspace, or sort by memory. Mobile sheets are excluded. Background workspaces are excluded by default; enable **Include background conversations** in the plugin's Settings to include their open tabs. Turning it off cancels their pending stops.
 
+Checkbox selection adds bulk process controls: schedule or update stops, cancel pending schedules, or request stops for several conversations together. The selection shows combined process memory, and each operation reports successes, failures and skipped conversations separately.
+
 ## Setup
 
 Process control runs on Linux and Windows daemon hosts with Paseo v0.11 or later. On macOS the screen loads, but process controls are unavailable. It is validated with Codex v0.162.1 and v0.163.0, and Claude v2.1.299 and v2.1.301. With other versions, conversations work normally but process control stays off. On Windows, Claude needs Node.js on PATH.
 
-When the plugin first runs, it turns on process control for Codex and Claude by changing each provider's launch command to a small bridge. New conversations use it right away. After installing or updating, restart the Paseo daemon so that conversations that were already open use it too; the plugin never restarts the daemon itself. To leave a provider unchanged, turn it off in Settings → Plugins → free-your-agents → Settings. Turning a provider off restores its original launch command, so do this before uninstalling.
+When the plugin first runs, it turns on process control for Codex and Claude by changing each provider's launch command to a small bridge. New conversations use it right away. After installing, or when an update changes the bridge, restart the Paseo daemon so that conversations that were already open use it too; the plugin never restarts the daemon itself. Interface-only updates leave existing bridges in place. To leave a provider unchanged, turn it off in Settings → Plugins → free-your-agents → Settings. Turning a provider off restores its original launch command, so do this before uninstalling.
 
 ## Data and limits
 
