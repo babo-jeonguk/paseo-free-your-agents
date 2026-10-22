@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.1 — 2026-10-22
+
+### Fixed
+
+- Keep conversation titles in place when selection checkboxes appear. Each row now shows a provider logo with a status badge in the same fixed position.
+- Show the correct Claude or Codex logo for custom provider profiles that inherit through `extends`.
+
 ## 1.1.0 — 2026-10-21
 
 ### Added
