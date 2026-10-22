@@ -8,6 +8,7 @@ import type { Row } from "../shared/model";
 import { HoursSchema } from "../shared/model";
 import { changeStopRpc, listRpc } from "../shared/rpc";
 import { BulkControls } from "./bulk-control";
+import { ConversationIcon } from "./conversation-icon";
 import { SelectionCheckbox, useTouchSelection } from "./selection";
 import {
   controlNote,
@@ -500,21 +501,21 @@ const ConversationRow = memo(function ConversationRow({
   const [checkboxFocused, setCheckboxFocused] = useState(false);
   const runtime = row.runtime;
   const Container = touchSelection ? Pressable : View;
-  const showSelection = selecting || checkboxFocused || (!touchSelection && hovered);
+  const showSelection = checked || selecting || checkboxFocused || (!touchSelection && hovered);
   const checkbox = (
     <SelectionCheckbox
       label={`Select conversation: ${runtime.title}`}
       checked={checked}
       onPress={() => check(runtime.agentId)}
       theme={theme}
-      revealed={selecting || (!touchSelection && hovered)}
+      revealed={showSelection}
       inertWhenHidden={touchSelection}
       onFocusChange={setCheckboxFocused}
     />
   );
   return (
     <Container
-      style={[styles.row, compact && { paddingLeft: showSelection ? 68 : 16 }, checked && { backgroundColor: theme.colors.surface2 }]}
+      style={[styles.row, checked && { backgroundColor: theme.colors.surface2 }]}
       testID={`conversation-${runtime.agentId}`}
       onPointerEnter={() => setHovered(true)}
       onPointerLeave={() => setHovered(false)}
@@ -526,12 +527,19 @@ const ConversationRow = memo(function ConversationRow({
         onPress: () => { if (selecting) check(runtime.agentId); },
       } : {})}
     >
-      {compact && <View style={{ position: "absolute", left: 8, top: 16 }}>{checkbox}</View>}
       <View style={styles.session}>
-        {!compact && <View style={{ position: "absolute", left: 0, top: 0, zIndex: 1 }}>{checkbox}</View>}
-        {/* Keep the five column widths fixed; only inset content inside Session. */}
-        <View style={{ gap: 4, paddingLeft: !compact && showSelection ? 52 : 0 }}>
-          <View style={styles.line}>
+        {/* Both marks use one fixed slot; revealing selection never moves text. */}
+        <View style={{ position: "absolute", left: 0, top: 0, zIndex: 1, width: 44, height: 44 }}>
+          <View pointerEvents="none" testID="selection-identity" style={{
+            position: "absolute", width: 44, height: 44,
+            alignItems: "center", justifyContent: "center", opacity: showSelection ? 0 : 1,
+          }}>
+            <ConversationIcon row={row} theme={theme} />
+          </View>
+          {checkbox}
+        </View>
+        <View style={{ gap: 4, paddingLeft: 52 }}>
+          <View style={[styles.line, { minHeight: 44 }]}>
             <Text style={[styles.strong, { flexShrink: 1 }]}>{runtime.title}</Text>
             {open && (
               <Pressable

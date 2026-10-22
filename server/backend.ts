@@ -9,7 +9,7 @@ import { createCommandSetup, createCommandReceiptStore } from "./command-setup";
 import { createConversationMetadata } from "./conversation-metadata";
 import { launcherBuild, prepareRuntimeCommand, recordRuntime } from "./runtime-assets";
 import { createProxyRuntime, type RuntimeProvider } from "./proxy-runtime";
-import { bridgeProvider, type ProviderEntries } from "./provider-profiles";
+import { baseProvider, bridgeProvider, type ProviderEntries } from "./provider-profiles";
 import { runtimeApi, type RuntimeApi } from "../shared/model";
 import { controlSupported } from "./platform.mjs";
 
@@ -36,15 +36,18 @@ export function createBackend(
     ReturnType<typeof createCommandSetup>
   >();
   let profiles: { expiresAt: number; providers: ProviderEntries } | null = null;
-  async function runtimeProvider(provider: string): Promise<RuntimeProvider | null> {
-    if (provider === "codex" || provider === "claude") return provider;
-    if (!paseo) return null;
+  async function providerEntries(): Promise<ProviderEntries> {
+    if (!paseo) return {};
     if (!profiles || Date.now() >= profiles.expiresAt)
       profiles = {
         expiresAt: Date.now() + 15_000,
         providers: (await paseo.config.get()).config.providers ?? {},
       };
-    return bridgeProvider(profiles.providers, provider);
+    return profiles.providers;
+  }
+  async function runtimeProvider(provider: string): Promise<RuntimeProvider | null> {
+    if (provider === "codex" || provider === "claude") return provider;
+    return bridgeProvider(await providerEntries(), provider);
   }
   const proxy = createProxyRuntime({
     directory: join(directory, "runtime"),
@@ -131,7 +134,15 @@ export function createBackend(
     snapshot: async (input) => {
       await ready;
       if (readinessError) throw readinessError;
-      return current().snapshot(input);
+      const runtimes = await current().snapshot(input);
+      if (runtimes.every(runtime => runtime.provider === "codex" || runtime.provider === "claude"))
+        return runtimes;
+      // Optional identity metadata must not hide inventory if config is unavailable.
+      const providers = await providerEntries().catch(() => ({}));
+      return runtimes.map(runtime => {
+        const base = baseProvider(providers, runtime.provider);
+        return base && base !== runtime.provider ? { ...runtime, baseProvider: base } : runtime;
+      });
     },
     releaseIfIdle: async (input) => {
       await ready;

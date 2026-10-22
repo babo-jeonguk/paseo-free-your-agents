@@ -70,3 +70,44 @@ test("process control is on by default and stays off once turned off", { skip: !
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("profile inventory carries inherited provider identity without granting process control", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "fya-profile-identity-"));
+  const profiles = {
+    "claude-main": { extends: "claude" },
+    "claude-sub": { extends: "claude-main" },
+    "codex-sub": { extends: "codex" },
+    "custom-worker": { extends: "claude-sub", command: ["/custom/claude"] },
+    "claude-lookalike": {},
+    cycle: { extends: "cycle" },
+  };
+  try {
+    // Existing opt-out receipts keep this read-only identity test from enabling
+    // provider commands. Identity must still work when control is unavailable.
+    for (const provider of ["codex", "claude"] as const) {
+      await createCommandReceiptStore(join(directory, "setup", provider + ".json")).write({
+        version: 1, id: randomUUID(), provider, originalCommand: null,
+        installedCommand: ["/unused"], phase: "cancelled",
+      });
+    }
+    const api = {
+      config: {
+        get: async () => ({ config: { providers: profiles } }),
+        patch: async () => { throw new Error("Identity lookup must not change provider commands"); },
+      },
+      agents: { list: async () => ({
+        entries: Object.keys(profiles).map(id => ({ agent: { id, provider: id, title: id, cwd: "/workspace" } })),
+        pageInfo: { hasMore: false },
+      }) },
+    } as unknown as PluginHandlerContext["paseo"];
+    const rows = await createBackend(directory).attach(api).snapshot({ agentIds: Object.keys(profiles) });
+    assert.deepEqual(rows.map(row => [row.provider, Reflect.get(row, "baseProvider")]), [
+      ["claude-main", "claude"], ["claude-sub", "claude"], ["codex-sub", "codex"],
+      ["custom-worker", "claude"], ["claude-lookalike", undefined], ["cycle", undefined],
+    ]);
+    assert.equal(rows.find(row => row.provider === "custom-worker")!.controlStatus, "unsupported");
+    assert.ok(rows.every(row => !row.releasable));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

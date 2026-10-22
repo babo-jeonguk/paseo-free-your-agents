@@ -1,6 +1,28 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { bridgeProvider } from "./provider-profiles";
+import { baseProvider, bridgeProvider } from "./provider-profiles";
+
+test("display identity follows profile ancestry independently of command overrides", () => {
+  const providers = {
+    "claude-main": { extends: "claude" },
+    "claude-sub": { extends: "claude-main" },
+    "codex-sub": { extends: "codex" },
+    "custom-name": { extends: "claude-sub", command: ["/custom/cli"] },
+    "claude-lookalike": {},
+    cycleA: { extends: "cycleB" },
+    cycleB: { extends: "cycleA" },
+    broken: { extends: "missing" },
+  };
+  assert.equal(baseProvider(providers, "claude"), "claude");
+  assert.equal(baseProvider(providers, "codex"), "codex");
+  assert.equal(baseProvider(providers, "claude-main"), "claude");
+  assert.equal(baseProvider(providers, "claude-sub"), "claude");
+  assert.equal(baseProvider(providers, "codex-sub"), "codex");
+  assert.equal(baseProvider(providers, "custom-name"), "claude");
+  assert.equal(bridgeProvider(providers, "custom-name"), null);
+  for (const provider of ["claude-lookalike", "cycleA", "broken", "missing"])
+    assert.equal(baseProvider(providers, provider), null);
+});
 
 test("profiles without their own command share their base provider's bridge", () => {
   const providers = {

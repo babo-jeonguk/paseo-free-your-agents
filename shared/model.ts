@@ -9,6 +9,8 @@ export const RuntimeSchema = z.object({
   agentId: z.string(),
   title: z.string(),
   provider: z.string(),
+  // Resolved profile ancestry for display; provider retains the original ID.
+  baseProvider: z.enum(["codex", "claude"]).optional(),
   workspace: z.string(),
   generation: z.string().nullable(),
   presence: z.enum(["running", "absent", "unknown"]),

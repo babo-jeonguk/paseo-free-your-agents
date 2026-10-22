@@ -60,7 +60,7 @@ Each conversation has exactly one status, so the status counts add up to **All**
 
 ### Control multiple conversations
 
-On desktop, hover a row or focus its checkbox with the keyboard to reveal selection. On touch screens, touch and hold a conversation to start selecting, then tap other rows to add or remove them. The header checkbox selects all conversations in the current search and filter results.
+Each row starts with its provider logo and a small status badge: a hollow ring for idle, a filled circle with dots for working, and a slash for no process. Profiles inherit their logo through `extends` while keeping their profile name in the Agent column. On desktop, hover a row or focus its checkbox with the keyboard to replace the logo and badge with selection; session titles stay in place. Checkboxes remain visible while selecting. On touch screens, touch and hold a conversation to start selecting, then tap other rows to add or remove them. The header checkbox selects all conversations in the current search and filter results.
 
 The selection toolbar shows the selected count and combined process memory. Open **Control selected** to schedule or update stops with one duration, cancel pending schedules, or review and confirm a stop request. Each process's timer starts when its schedule is applied. Active work stays protected by the same checks used for individual controls.
 
