@@ -27,7 +27,8 @@ export const RuntimeSchema = z.object({
 export type Runtime = z.infer<typeof RuntimeSchema>;
 
 export const ReleaseSchema = z.object({
-  status: z.enum(["released", "absent", "busy", "generation-changed", "unsupported", "failed"]),
+  // "stopping": the provider accepted the stop and is finishing its own work first.
+  status: z.enum(["released", "stopping", "absent", "busy", "generation-changed", "unsupported", "failed"]),
   error: z.string().nullable(),
 });
 export type Release = z.infer<typeof ReleaseSchema>;

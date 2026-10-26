@@ -1,6 +1,10 @@
 // Provider compatibility: a Claude stdio facade. Not published or enabled on the host.
-// Uses the CLI's SDK Stop hook to observe background work/session crons. Never
-// reinitialize a running CLI to probe it: that can cancel existing hook requests.
+// Release follows the CLI's documented contract: idle is the authoritative
+// turn-over signal, background_tasks_changed is the level set of live background
+// work, and the SDK Stop hook reports scheduled wakeups. A release ends input and
+// lets native finish anything it started itself before exiting; it is never
+// killed mid-turn. Never reinitialize a running CLI to probe it: that can cancel
+// existing hook requests.
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -19,18 +23,17 @@ const reclaimer = createMemoryReclaimer();
 
 const [binary, ...originalArgs] = process.argv.slice(2);
 if (!binary) throw new Error("Claude command required");
-const baseHooksDisabled =
+// Native Claude accepts SDK hooks in these modes but never calls them.
+const hooksDisabled =
   originalArgs.includes("--bare") ||
   (process.env.RUNTIME_PROXY_FIXTURE !== "1" && !!process.env.CLAUDE_CODE_SIMPLE);
-let hooksDisabled = baseHooksDisabled;
-let observerState = baseHooksDisabled ? "disabled" : "negotiating";
-const configuredNegotiationTimeout = Number(process.env.RUNTIME_PROXY_NEGOTIATION_TIMEOUT_MS);
-const negotiationTimeoutMs =
+const configuredStartupTimeout = Number(process.env.RUNTIME_PROXY_STARTUP_TIMEOUT_MS);
+const startupTimeoutMs =
   process.env.RUNTIME_PROXY_FIXTURE === "1" &&
-  Number.isFinite(configuredNegotiationTimeout) &&
-  configuredNegotiationTimeout > 0
-    ? configuredNegotiationTimeout
-    : 5_000;
+  Number.isFinite(configuredStartupTimeout) &&
+  configuredStartupTimeout > 0
+    ? configuredStartupTimeout
+    : 30_000;
 if (process.env.RUNTIME_PROXY_RECIPE_FILE)
   Object.assign(
     process.env,
@@ -58,61 +61,30 @@ const settingTypes = new Set([
 ]);
 let settingsBytes = 0;
 const trackingComplete = () => forwarded.valid() && serverRequests.valid();
-let initializationGate = Promise.resolve(),
-  finishInitialization = null,
-  observerInitializeId = null,
-  observerAccepted = false,
-  observerInitialized = false,
-  negotiationOutputs = [],
-  initializationTimer = null,
-  fallbackInitialization = null;
-function beginInitialization() {
-  observerAccepted = false;
-  observerInitialized = false;
-  negotiationOutputs = [];
-  initializationGate = new Promise((resolve) => {
-    finishInitialization = resolve;
-  });
-  initializationTimer = setTimeout(() => {
-    void fallbackToPassthrough().catch(() => shutdown(1));
-  }, negotiationTimeoutMs);
-}
-function endInitialization() {
-  clearTimeout(initializationTimer);
-  initializationTimer = null;
-  finishInitialization?.();
-  finishInitialization = null;
-}
-async function completeObserverNegotiation() {
-  if (observerState !== "negotiating" || !observerAccepted || !observerInitialized) return;
-  observerState = "controlled";
-  endInitialization();
-  const outputs = negotiationOutputs;
-  negotiationOutputs = [];
-  for (const { message, frame } of outputs)
-    await (frame ? writeProtocolBytes(process.stdout, frame) : output(message));
-}
 let child,
   generation,
   spawns = 0,
   phase = "starting",
   tail = Promise.resolve(),
   quitting = false;
-let initializer = null,
-  initializerMessage = null,
+let initializeSeen = false,
+  initializer = null,
   sessionId = null,
   version = null,
   nativeState = "unknown",
-  safety = null;
+  inventory = null,
+  draining = null;
+// Native requests abandoned by an exited process; late client answers are moot.
+const abandoned = new Set();
 let activeUsers = 0,
-  goalState = "unknown",
+  goalState = "complete",
   backgroundTasks = 0,
   protocolSupported = true;
 let closeControl = async () => {};
 const output = (value) => writeJsonLine(process.stdout, value);
 // Pass the source frame when the message is forwarded unchanged.
 function write(value, frame) {
-  if (!child || child.exitCode !== null || child.signalCode !== null)
+  if (!child || child.exitCode !== null || child.signalCode !== null || child.stdin.writableEnded)
     throw new Error("Claude is not running");
   return frame ? writeProtocolBytes(child.stdin, frame) : writeJsonLine(child.stdin, value);
 }
@@ -146,16 +118,14 @@ async function receive(message, frame) {
     const request = message.request;
     if (request?.subtype === "hook_callback" && request.callback_id === hookId) {
       const input = request.input;
-      safety =
-        input?.hook_event_name === "Stop" &&
-        Array.isArray(input.background_tasks) &&
-        Array.isArray(input.session_crons)
-          ? {
-              backgroundTasks: input.background_tasks.length,
-              crons: input.session_crons.length,
-              transcript: input.transcript_path,
-            }
+      // The last completed turn's scheduled wakeups. They survive a stop (resume
+      // restores them) but would not fire while released.
+      inventory =
+        input?.hook_event_name === "Stop" && Array.isArray(input.session_crons)
+          ? { crons: input.session_crons.length, transcript: input.transcript_path }
           : null;
+      // A draining native has no input left to read a reply from.
+      if (child?.stdin.writableEnded) return;
       // Even our observing callback remains outstanding until its reply has
       // reached native. A slow stdin must not look idle during that write.
       serverRequests.add(message.request_id);
@@ -184,23 +154,6 @@ async function receive(message, frame) {
       return;
     }
     const request = forwarded.get(id);
-    if (
-      id === observerInitializeId &&
-      observerState === "negotiating"
-    ) {
-      if (message.response.subtype === "success") {
-        observerAccepted = true;
-        negotiationOutputs.push({ message, frame });
-        forwarded.delete(id);
-        await completeObserverNegotiation();
-        return;
-      } else {
-        await fallbackToPassthrough();
-        return;
-      }
-    } else if (id === observerInitializeId) {
-      endInitialization();
-    }
     forwarded.delete(id);
     if (request && message.response.subtype === "success") {
       if (readTypes.has(request.subtype))
@@ -215,39 +168,17 @@ async function receive(message, frame) {
           settings.push(request);
           settingsBytes += bytes;
         } else protocolSupported = false;
-        if (
-          request.subtype === "apply_flag_settings" &&
-          ["disableAllHooks", "allowManagedHooksOnly", "hooks"].some((name) =>
-            Object.hasOwn(request.settings ?? {}, name),
-          )
-        ) {
-          safety = null;
-          hooksDisabled =
-            baseHooksDisabled ||
-            request.settings?.disableAllHooks === true ||
-            request.settings?.allowManagedHooksOnly === true;
-        }
       }
     }
   }
   if (message.type === "system" && message.subtype === "init") {
-    if (
-      observerState === "negotiating" &&
-      (typeof message.session_id !== "string" || !message.session_id)
-    ) {
-      protocolSupported = false;
-      await fallbackToPassthrough();
-      return;
-    }
     version = typeof message.claude_code_version === "string" ? message.claude_code_version : null;
-    if (sessionId && sessionId !== message.session_id)
-      throw new Error("Claude session identity changed");
-    sessionId = message.session_id;
-    if (observerState === "negotiating") {
-      observerInitialized = true;
-      negotiationOutputs.push({ message, frame });
-      await completeObserverNegotiation();
-      return;
+    // The turn is already running, so an unusable session fails closed in place.
+    if (typeof message.session_id !== "string" || !message.session_id) protocolSupported = false;
+    else {
+      if (sessionId && sessionId !== message.session_id)
+        throw new Error("Claude session identity changed");
+      sessionId = message.session_id;
     }
   }
   if (message.type === "system" && message.subtype === "session_state_changed") {
@@ -255,19 +186,17 @@ async function receive(message, frame) {
   }
   if (message.type === "system" && message.subtype === "background_tasks_changed") {
     if (!Array.isArray(message.tasks)) protocolSupported = false;
-    else {
-      backgroundTasks = message.tasks.length;
-      // The authoritative level event supersedes an earlier Stop-hook count.
-      // Otherwise a task completing without another root Stop wedges release.
-      if (safety) safety = { ...safety, backgroundTasks };
-    }
+    else backgroundTasks = message.tasks.length;
   }
   if (message.type === "active_goal") {
-    goalState = !Object.hasOwn(message, "value")
-      ? "unknown"
-      : message.value === null
+    // Native Claude reports a goal only when its /goal Stop hook clears it
+    // (null, or no value once undefined is serialized) or keeps it unfinished.
+    goalState =
+      message.value == null
         ? "complete"
-        : "unfinished";
+        : typeof message.value === "object"
+          ? "unfinished"
+          : "unknown";
   }
   if (message.type === "result") {
     activeUsers = Math.max(0, activeUsers - 1);
@@ -322,18 +251,21 @@ async function launch(resume = false) {
   child = current;
   generation = randomUUID();
   spawns++;
+  // The background level is per process and is not re-sent at startup.
   nativeState = "unknown";
-  safety = null;
-  goalState = "unknown";
+  backgroundTasks = 0;
+  inventory = null;
+  // A pursued goal keeps native running instead of idle, and a deferred one
+  // waits on background work, so only an explicit report can mark it unfinished.
+  goalState = "complete";
   void pumpJsonLines(current.stdout, (message, frame) => {
     reclaimer.note(frame);
     const exchange = session.exchange("provider", { incarnation, message });
     if (!exchange.accepted) return;
+    if (changesEvidence(message)) exchange.invalidate();
     return receive(message, frame).finally(exchange.settle);
   }).catch(() => {
-    if (child === current && observerState === "negotiating")
-      return fallbackToPassthrough().catch(() => shutdown(1));
-    if (child !== current || phase === "restarting") return;
+    if (child !== current || phase === "stopping") return;
     return shutdown(1);
   });
   current.stderr.pipe(process.stderr, { end: false });
@@ -344,22 +276,19 @@ async function launch(resume = false) {
   current.on("exit", () => {
     for (const pending of internal.values()) pending.reject(new Error("Claude exited"));
     internal.clear();
-    if (child !== current || quitting) return;
-    if (observerState === "negotiating" && phase === "running") {
-      void fallbackToPassthrough().catch(() => shutdown(1));
-      return;
-    }
-    if (!["stopping", "restarting"].includes(phase)) void shutdown(1);
+    if (child !== current || quitting || phase === "stopping") return;
+    void shutdown(1);
   });
   await once(current, "spawn");
 }
 function request(request) {
   const id = "free-your-agents-internal-" + randomUUID();
   return new Promise((resolve, reject) => {
+    // Resuming starts native Claude again, as slowly as a first launch.
     const timer = setTimeout(() => {
       internal.delete(id);
       reject(new Error("Claude handshake timed out"));
-    }, 5000);
+    }, startupTimeoutMs);
     internal.set(id, {
       resolve: (value) => {
         clearTimeout(timer);
@@ -377,6 +306,7 @@ function request(request) {
     });
   });
 }
+// Bridge shutdown only. A release drains instead (see release()).
 async function stopNative() {
   const current = child;
   if (!current) return;
@@ -395,35 +325,55 @@ async function stopNative() {
   }
   if (child === current) child = null;
 }
-async function fallbackToPassthrough(originalInitialization = initializerMessage) {
-  if (observerState !== "negotiating") return fallbackInitialization;
-  if (!originalInitialization) throw new Error("Claude initialization is unavailable");
-  observerState = "passthrough";
-  hooksDisabled = true;
-  negotiationOutputs = [];
-  phase = "restarting";
-  // Invalidate the old child before awaiting its exit. Any late output from it
-  // must not complete negotiation or mutate evidence for the replacement.
-  session.control({ op: "replace" });
-  fallbackInitialization = (async () => {
-    await stopNative();
-    sessionId = null;
-    backgroundTasks = 0;
-    await launch();
-    phase = "running";
-    await write(originalInitialization);
-  })();
-  return fallbackInitialization;
+// Ending input is Claude's graceful shutdown: native finishes background work and
+// turns it started itself (a task notification racing this release included),
+// fails permission prompts it can no longer ask, and exits. Its own exit is the
+// only completion; a drain is never cut short by a signal.
+function drain(id, expectedGeneration) {
+  const current = child;
+  const exited = once(current, "exit");
+  current.stdin.end();
+  draining = {
+    id,
+    done: exited.then(async () => {
+      if (child === current) child = null;
+      // Requests native abandoned at exit no longer need the client's answer.
+      for (const requestId of serverRequests.ids()) {
+        abandoned.add(requestId);
+        serverRequests.delete(requestId);
+        await output({ type: "control_cancel_request", request_id: requestId });
+      }
+      phase = "released";
+      outcomes.set(id, { generation: expectedGeneration, result: { status: "released" } });
+      draining = null;
+      reclaimer.released(() => phase === "released");
+    }),
+  };
+  return draining.done;
 }
+const changesEvidence = (message) =>
+  message.type === "result" ||
+  message.type === "active_goal" ||
+  message.type === "control_request" ||
+  (message.type === "system" &&
+    ["init", "session_state_changed", "background_tasks_changed"].includes(message.subtype));
+const unavailable = () =>
+  hooksDisabled
+    ? "Claude SDK hooks are disabled for this invocation."
+    : !initializeSeen
+      ? "Claude process control is waiting for initialization."
+      : !initializer
+        ? "This conversation's setup is too large to restore after a stop."
+        : !trackingComplete()
+          ? "Protocol tracking capacity was exceeded. The process was left running."
+          : !protocolSupported
+            ? "This Claude operation could not be validated for process control."
+            : null;
 async function snapshot() {
   const memory = await sampleMemory(child?.pid);
   // A reservation does not release anything. Its eventual release still needs
-  // this turn's complete safety snapshot and all guards in release().
-  const scheduleSupported =
-    !hooksDisabled &&
-    observerState === "controlled" &&
-    protocolSupported &&
-    trackingComplete();
+  // a completed turn's inventory and all guards in release().
+  const scheduleSupported = unavailable() === null;
   return {
     ...memory,
     controlVersion: 1,
@@ -439,61 +389,40 @@ async function snapshot() {
     pendingRequests: forwarded.size,
     pendingServerRequests: serverRequests.size,
     backgroundTasks,
-    hookBackgroundTasks: safety?.backgroundTasks ?? null,
-    sessionCrons: safety?.crons ?? null,
+    sessionCrons: inventory?.crons ?? null,
     nativeState,
     sessionId,
     providerVersion: version,
     cacheBytes: reads.stats().bytes,
     cacheByteLimit: reads.stats().maxBytes,
     scheduleSupported,
-    releaseSupported: scheduleSupported && safety !== null && goalState !== "unknown",
-    unavailableReason: hooksDisabled
-      ? observerState === "passthrough"
-        ? "Claude process-control hook negotiation was unavailable."
-        : "Claude SDK hooks are disabled for this invocation."
-      : !trackingComplete()
-      ? "Protocol tracking capacity was exceeded. The process was left running."
-      : !protocolSupported
-      ? "This Claude operation could not be validated for process control."
-      : scheduleSupported
-      ? "Waiting for a safe stopping point. You can schedule a stop."
-      : "Claude process control is waiting for initialization.",
+    releaseSupported: scheduleSupported && inventory !== null && goalState !== "unknown",
+    unavailableReason:
+      unavailable() ?? "Waiting for a safe stopping point. You can schedule a stop.",
   };
 }
-async function release(expectedGeneration) {
+async function release(id, expectedGeneration) {
   if (phase === "released") return { status: "absent" };
   if (expectedGeneration !== generation) return { status: "generation-changed" };
-  if (hooksDisabled)
-    return {
-      status: "unsupported",
-      reason:
-        observerState === "passthrough"
-          ? "Claude process-control hook negotiation was unavailable."
-          : "Claude SDK hooks are disabled for this invocation.",
-    };
-  if (phase !== "running" || !initializer || !sessionId)
-    return { status: "busy", reason: "Not initialized" };
-  if (!protocolSupported || observerState !== "controlled")
-    return { status: "unsupported", reason: "Claude protocol is not validated" };
-  if (!trackingComplete())
-    return {
-      status: "unsupported",
-      reason: "Protocol tracking capacity was exceeded. The process was left running.",
-    };
-  if (!safety) return { status: "busy", reason: "Waiting for a complete Claude safety snapshot" };
+  if (phase === "stopping") return { status: "stopping" };
+  const reason = unavailable();
+  if (reason) return { status: initializeSeen ? "unsupported" : "busy", reason };
+  if (phase !== "running" || !sessionId) return { status: "busy", reason: "Not initialized" };
+  if (!inventory) return { status: "busy", reason: "Waiting for Claude to finish a turn" };
   if (goalState === "unknown")
-    return { status: "busy", reason: "Waiting for explicit Claude goal state" };
+    return { status: "busy", reason: "Claude reported an unreadable goal state" };
   const checkpoint = session.control({ op: "checkpoint" });
-  const inspectedSafety = safety;
+  const inspected = inventory;
   const historySaved =
-    typeof inspectedSafety.transcript === "string" &&
-    !!(await stat(inspectedSafety.transcript).catch(() => null))?.size;
+    typeof inspected.transcript === "string" &&
+    !!(await stat(inspected.transcript).catch(() => null))?.size;
+  // Answered client input plus authoritative idle orders this decision after
+  // everything the client sent; the checkpoint fences anything since.
   const verdict = session.control({
     op: "release",
     checkpoint,
     evidence: {
-      protocolSupported: protocolSupported && !hooksDisabled && observerState === "controlled",
+      protocolSupported,
       trackingComplete: trackingComplete(),
       inventoryComplete: true,
       pendingWork: activeUsers + forwarded.size + serverRequests.size,
@@ -506,21 +435,24 @@ async function release(expectedGeneration) {
                 ? "unknown"
                 : "active",
           goal: goalState,
-          background:
-            backgroundTasks || inspectedSafety.backgroundTasks ? "present" : "none",
-          scheduled: inspectedSafety.crons ? "present" : "none",
+          background: backgroundTasks ? "present" : "none",
+          scheduled: inspected.crons ? "present" : "none",
         },
       ],
       resumeDurable: historySaved,
-      stable: safety === inspectedSafety,
+      stable: inventory === inspected,
     },
   });
   if (verdict.status !== "safe") return verdict;
   phase = "stopping";
-  await stopNative();
-  phase = "released";
-  reclaimer.released(() => phase === "released");
-  return { status: "released" };
+  const done = drain(id, expectedGeneration);
+  // Usually native exits at once. A longer drain reports "stopping"; the
+  // scheduler confirms with the same ID until native has exited.
+  const exited = await Promise.race([
+    done.then(() => true),
+    new Promise((resolve) => setTimeout(resolve, 1000, false)),
+  ]);
+  return { status: exited ? "released" : "stopping" };
 }
 async function wake() {
   if (phase !== "released") return;
@@ -531,12 +463,8 @@ async function wake() {
   phase = "running";
 }
 async function incoming(message, frame) {
-  const initializing =
-    message.type === "control_request" && message.request?.subtype === "initialize";
-  if (!initializing) await initializationGate;
-  // Stop-hook output is a point-in-time proof. Any client frame that can
-  // mutate or resume native work must earn a new proof before release.
-  if (!isPassiveClientFrame(message)) safety = null;
+  // Input arriving during a drain is delivered to the resumed session.
+  if (draining) await draining.done;
   if (message.type === "user") {
     if (phase === "released") await wake();
     activeUsers++;
@@ -559,29 +487,26 @@ async function incoming(message, frame) {
       );
       return;
     }
+    // The client's initialization is forwarded exactly once, carrying our Stop
+    // hook in the same handshake. Whether native runs it is proven by use: no
+    // completed-turn inventory, no release. A setup too large to keep for a
+    // resume passes through unchanged and disables release for this session.
     if (value?.subtype === "initialize") {
-      if (Buffer.byteLength(JSON.stringify(value)) <= 64 * 1024) {
-        initializer = structuredClone(value);
-        initializerMessage = structuredClone(message);
-      } else {
-        protocolSupported = false;
-        observerInitializeId = message.request_id;
-        forwarded.set(message.request_id, value);
-        beginInitialization();
-        await fallbackToPassthrough(message);
-        return;
-      }
-      if (initializer && !hooksDisabled && observerState === "negotiating") {
-        beginInitialization();
-        observerInitializeId = message.request_id;
+      initializeSeen = true;
+      initializer =
+        Buffer.byteLength(JSON.stringify(value)) <= 64 * 1024 ? structuredClone(value) : null;
+      if (initializer) {
         message = { ...message, request: attachHook(value) };
         frame = undefined;
       }
     }
     forwarded.set(message.request_id, value);
   }
-  if (message.type === "control_response" || message.type === "control_cancel_request")
-    serverRequests.delete(message.response?.request_id ?? message.request_id);
+  if (message.type === "control_response" || message.type === "control_cancel_request") {
+    const id = message.response?.request_id ?? message.request_id;
+    if (abandoned.delete(id)) return;
+    serverRequests.delete(id);
+  }
   await write(message, frame);
 }
 async function shutdown(code = 0) {
@@ -598,15 +523,18 @@ closeControl = await listenControl({
   handle: (message) =>
     message.op === "snapshot"
       ? snapshot()
-      : enqueue(async () => {
+      : // A drain holds the queue; confirming it must not wait behind it.
+        draining && message.expectedGeneration === generation
+        ? { status: "stopping" }
+        : enqueue(async () => {
           const previous = outcomes.get(message.id);
           if (previous) {
             if (previous.generation !== message.expectedGeneration)
               throw new Error("Control request reused for another generation");
             return previous.result;
           }
-          const result = await release(message.expectedGeneration);
-          if (!["busy", "unsupported"].includes(result.status))
+          const result = await release(message.id, message.expectedGeneration);
+          if (!["busy", "unsupported", "stopping"].includes(result.status))
             outcomes.set(message.id, { generation: message.expectedGeneration, result });
           if (outcomes.size > 128) outcomes.delete(outcomes.keys().next().value);
           return result;
