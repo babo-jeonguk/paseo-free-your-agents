@@ -19,6 +19,9 @@ import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
 const [root, version, observerMode] = process.argv.slice(2);
 const emit = value => process.stdout.write(JSON.stringify(value) + '\\n');
 let hook, initialized = false, finishing = false, background = true;
+// Like native Claude with msg_lifecycle_v1: every uuid-stamped message ends completed or cancelled.
+const reportsLifecycle = observerMode === 'lifecycle', queued = new Set();
+const lifecycle = (uuid, state) => reportsLifecycle && emit({ type: 'command_lifecycle', command_uuid: uuid, state, session_id: 'fixture-session' });
 appendFileSync(root + '/spawns', process.pid + '\\n');
 createInterface({ input: process.stdin }).on('line', line => {
   const message = JSON.parse(line);
@@ -30,7 +33,10 @@ createInterface({ input: process.stdin }).on('line', line => {
     }
     if (message.request.subtype === 'cancel_async_message') {
       writeFileSync(root + '/native-cancel', 'yes');
-      emit({ type: 'control_response', response: { subtype: 'success', request_id: message.request_id, response: { cancelled: false } } });
+      // A still-queued message is withdrawn with a terminal lifecycle and never runs.
+      const withdrawn = queued.delete(message.request.message_uuid);
+      if (withdrawn) lifecycle(message.request.message_uuid, 'cancelled');
+      emit({ type: 'control_response', response: { subtype: 'success', request_id: message.request_id, response: { cancelled: withdrawn } } });
       return;
     }
     // Like native Claude, an interrupted turn ends without a Stop hook.
@@ -51,6 +57,7 @@ createInterface({ input: process.stdin }).on('line', line => {
   if (message.type === 'user' && !initialized) {
     initialized = true;
     emit({ type: 'system', subtype: 'init', claude_code_version: version,
+      ...(reportsLifecycle ? { capabilities: ['msg_lifecycle_v1'] } : {}),
       ...(observerMode === 'missing-session' ? {} : { session_id: 'fixture-session' }) });
     // Native Claude sends active_goal only from its /goal Stop hook.
     if (observerMode === 'cleared-goal')
@@ -59,6 +66,21 @@ createInterface({ input: process.stdin }).on('line', line => {
       emit({ type: 'active_goal', value: { condition: 'fixture', iterations: 1 }, session_id: 'fixture-session' });
     else if (observerMode === 'malformed-goal')
       emit({ type: 'active_goal', value: 'fixture', session_id: 'fixture-session' });
+  }
+  // Messages sent while a turn is running wait in native's queue; 'hold' ones stay
+  // queued until withdrawn, and 'batch' ones run together as one turn.
+  if (message.type === 'user' && typeof message.uuid === 'string' && reportsLifecycle) {
+    queued.add(message.uuid);
+    lifecycle(message.uuid, 'queued');
+    if (message.message.content === 'batch' && queued.size === 2) {
+      emit({ type: 'system', subtype: 'session_state_changed', state: 'running' });
+      for (const uuid of queued) lifecycle(uuid, 'started');
+      emit({ type: 'result', subtype: 'success', session_id: 'fixture-session' });
+      for (const uuid of queued) lifecycle(uuid, 'completed');
+      queued.clear();
+      emit({ type: 'system', subtype: 'session_state_changed', state: 'idle' });
+    }
+    return;
   }
   if (message.type === 'user') {
     emit({ type: 'system', subtype: 'session_state_changed', state: 'running' });
@@ -121,8 +143,8 @@ setInterval(() => {
 }, 10);
 `;
 
-async function waitFor<T>(read: () => Promise<T>, done: (value: T) => boolean): Promise<T> {
-  const deadline = Date.now() + 10_000;
+async function waitFor<T>(read: () => Promise<T>, done: (value: T) => boolean, timeoutMs = 10_000): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const value = await read();
     if (done(value)) return value;
@@ -160,6 +182,7 @@ test("Claude bridge accepts reservations during its first turn and protects fore
     ["2.1.301", false, "drain-interrupt"],
     ["2.1.301", false, "drain-withdraw"],
     ["2.1.301", false, "drain-flood"],
+    ["2.1.301", false, "lifecycle"],
     ["2.1.301", false, "cleared-goal"],
     ["2.1.301", false, "unfinished-goal"],
     ["2.1.301", false, "malformed-goal"],
@@ -269,6 +292,20 @@ test("Claude bridge accepts reservations during its first turn and protects fore
     assert.equal((await control.list()).rows[0]!.stop!.state, "deferred");
     await writeFile(join(root, "background-done"), "yes");
     await waitFor(() => adapter.api.snapshot({ agentIds: ["a"] }), ([value]) => value?.activity === "idle");
+    if (observerMode === "lifecycle") {
+      // Native reports each message's own lifecycle: a withdrawn message never
+      // yields a result, and messages run together share one.
+      const releasable = () => waitFor(() => adapter.api.snapshot({ agentIds: ["a"] }), ([value]) => value?.activity === "idle" && value.releasable === true);
+      const withdrawn = "55555555-5555-4555-8555-555555555555";
+      bridge.stdin.write(JSON.stringify({ type: "user", uuid: withdrawn, message: { role: "user", content: "hold" } }) + "\n");
+      bridge.stdin.write(JSON.stringify({ type: "control_request", request_id: "withdraw", request: { subtype: "cancel_async_message", message_uuid: withdrawn } }) + "\n");
+      await waitFor(async () => stdout, (value) => value.includes('"request_id":"withdraw"'));
+      await releasable();
+      for (const uuid of ["66666666-6666-4666-8666-666666666666", "77777777-7777-4777-8777-777777777777"])
+        bridge.stdin.write(JSON.stringify({ type: "user", uuid, message: { role: "user", content: "batch" } }) + "\n");
+      await waitFor(async () => stdout, (value) => value.includes('"command_uuid":"77777777-7777-4777-8777-777777777777","state":"completed"'));
+      await releasable();
+    }
     if (observerMode === "setting-after-turn") {
       // A setting is not work: the completed turn's inventory still applies.
       bridge.stdin.write(JSON.stringify({
@@ -356,7 +393,8 @@ test("Claude bridge accepts reservations during its first turn and protects fore
       // The resumed turn is interrupted before any Stop hook can run.
       await rm(join(root, "finish"), { force: true });
       bridge.stdin.write(JSON.stringify({ type: "user", message: { role: "user", content: "resume" } }) + "\n");
-      await waitFor(() => readFile(join(root, "started"), "utf8").catch(() => ""), Boolean);
+      // slow-wake delays the resumed handshake by 6 s on purpose; leave room for a loaded machine.
+      await waitFor(() => readFile(join(root, "started"), "utf8").catch(() => ""), Boolean, 30_000);
       assert.equal((await adapter.api.snapshot({ agentIds: ["a"] }))[0]!.presence, "running", stderr);
       if (observerMode === "setting-after-turn")
         assert.equal(await readFile(join(root, "setting-processed"), "utf8"), "yes", "Resume replays the setting");

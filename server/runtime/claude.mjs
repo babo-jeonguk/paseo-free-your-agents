@@ -55,6 +55,10 @@ const isPassiveClientFrame = (message) =>
 const session = createControlledSession({
   isPassiveClientFrame,
 });
+// Requests a resume does not replay as settings: the initialization is kept on
+// its own, and queue controls change only native's pending input, which a stop
+// requires to be empty.
+const unreplayedTypes = new Set(["initialize", "interrupt", "cancel_async_message"]);
 const settingTypes = new Set([
   "set_model",
   "set_permission_mode",
@@ -87,7 +91,13 @@ let waitingFrames = 0,
   waitingBytes = 0,
   drainInterrupted = false;
 const inputBacklogged = () => waitingFrames > 256 || waitingBytes > 256 * 1024;
-let activeUsers = 0,
+// Client messages native has not finished. Native reports each uuid-stamped
+// command's lifecycle (msg_lifecycle_v1), ending in completed or cancelled; a
+// withdrawn message yields no result and messages run together share one. Only
+// unstamped messages, or a native without lifecycles, fall back to results.
+const unfinished = new Set();
+let lifecycles = null,
+  unfinishedUnstamped = 0,
   goalState = "complete",
   backgroundTasks = 0,
   protocolSupported = true;
@@ -168,7 +178,7 @@ async function receive(message, frame) {
     if (request && message.response.subtype === "success") {
       if (readTypes.has(request.subtype))
         reads.set(JSON.stringify(request), message.response.response ?? {});
-      else if (request.subtype !== "initialize" && request.subtype !== "interrupt") {
+      else if (!unreplayedTypes.has(request.subtype)) {
         const bytes = Buffer.byteLength(JSON.stringify(request));
         if (
           settingTypes.has(request.subtype) &&
@@ -183,6 +193,12 @@ async function receive(message, frame) {
   }
   if (message.type === "system" && message.subtype === "init") {
     version = typeof message.claude_code_version === "string" ? message.claude_code_version : null;
+    lifecycles =
+      Array.isArray(message.capabilities) && message.capabilities.includes("msg_lifecycle_v1");
+    if (!lifecycles) {
+      unfinishedUnstamped += unfinished.size;
+      unfinished.clear();
+    }
     // The turn is already running, so an unusable session fails closed in place.
     if (typeof message.session_id !== "string" || !message.session_id) protocolSupported = false;
     else {
@@ -208,8 +224,13 @@ async function receive(message, frame) {
           ? "unfinished"
           : "unknown";
   }
+  if (
+    message.type === "command_lifecycle" &&
+    (message.state === "completed" || message.state === "cancelled")
+  )
+    unfinished.delete(message.command_uuid);
   if (message.type === "result") {
-    activeUsers = Math.max(0, activeUsers - 1);
+    unfinishedUnstamped = Math.max(0, unfinishedUnstamped - 1);
   }
   await (frame ? writeProtocolBytes(process.stdout, frame) : output(message));
 }
@@ -395,6 +416,7 @@ function settledOutcome(id, expectedGeneration) {
 }
 const changesEvidence = (message) =>
   message.type === "result" ||
+  message.type === "command_lifecycle" ||
   message.type === "active_goal" ||
   message.type === "control_request" ||
   (message.type === "system" &&
@@ -438,7 +460,7 @@ async function snapshot() {
     proxyPid: process.pid,
     nativePid: child?.pid ?? null,
     spawns,
-    activeTurns: activeUsers,
+    activeTurns: unfinished.size + unfinishedUnstamped,
     unfinishedGoals: goalState === "unfinished" ? 1 : 0,
     pendingRequests: forwarded.size,
     pendingServerRequests: serverRequests.size,
@@ -479,7 +501,7 @@ async function release(id, expectedGeneration) {
       protocolSupported,
       trackingComplete: trackingComplete(),
       inventoryComplete: true,
-      pendingWork: activeUsers + forwarded.size + serverRequests.size,
+      pendingWork: unfinished.size + unfinishedUnstamped + forwarded.size + serverRequests.size,
       subjects: [
         {
           execution:
@@ -521,7 +543,8 @@ async function incoming(message, frame) {
   if (draining) await draining;
   if (message.type === "user") {
     if (phase === "released") await wake();
-    activeUsers++;
+    if (typeof message.uuid === "string" && lifecycles !== false) unfinished.add(message.uuid);
+    else unfinishedUnstamped++;
   }
   if (message.type === "control_request") {
     const value = message.request;
