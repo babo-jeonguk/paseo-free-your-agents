@@ -67,13 +67,6 @@ const session = createControlledSession({
     typeof message?.method === "string" &&
     Object.hasOwn(message, "id") &&
     reads.has(message.method),
-  isActivityProviderFrame: ({ message }) =>
-    !(
-      Object.hasOwn(message, "id") &&
-      !message.method &&
-      typeof message.id === "string" &&
-      message.id.startsWith(prefix)
-    ),
 });
 // Codex reports a failed turn as systemError after execution has stopped.
 // Goal, terminal, request, history, and activity-revision guards below still
@@ -191,13 +184,30 @@ function notification(message) {
   if (message.method === "thread/goal/updated") {
     if (params.goal?.status === "complete") unfinishedGoals.delete(params.threadId);
     else unfinishedGoals.add(params.threadId);
+    return true;
   }
-  if (message.method === "thread/goal/cleared") unfinishedGoals.delete(params.threadId);
-  if (message.method === "turn/started") turns.add(params.threadId + ":" + params.turn?.id);
-  if (message.method === "turn/completed") turns.delete(params.threadId + ":" + params.turn?.id);
-  if (message.method === "serverRequest/resolved") serverRequests.delete(params.requestId);
+  if (message.method === "thread/goal/cleared") {
+    unfinishedGoals.delete(params.threadId);
+    return true;
+  }
+  if (message.method === "turn/started") {
+    turns.add(params.threadId + ":" + params.turn?.id);
+    return true;
+  }
+  if (message.method === "turn/completed") {
+    turns.delete(params.threadId + ":" + params.turn?.id);
+    return true;
+  }
+  if (message.method === "serverRequest/resolved") {
+    serverRequests.delete(params.requestId);
+    return true;
+  }
+  if (message.method === "thread/started") return true;
+  if (message.method === "thread/status/changed")
+    return !settledThreadStatuses.has(message.params?.status?.type);
+  return false;
 }
-async function receive(message, frame) {
+async function receive(message, frame, exchange) {
   if (Object.hasOwn(message, "id") && !message.method) {
     const pending = internal.get(message.id);
     if (pending) {
@@ -235,9 +245,12 @@ async function receive(message, frame) {
         if (!root) root = { thread: { id: message.result.thread.id } };
       }
     }
-  } else if (message.method && Object.hasOwn(message, "id")) serverRequests.add(message.id);
+  } else if (message.method && Object.hasOwn(message, "id")) {
+    exchange.invalidate();
+    serverRequests.add(message.id);
+  }
   else if (message.method) {
-    notification(message);
+    if (notification(message)) exchange.invalidate();
     if (suppressNotifications) return;
   }
   await (frame ? writer.forward(frame) : output(message));
@@ -265,7 +278,7 @@ async function launch() {
     reclaimer.note(frame);
     const exchange = session.exchange("provider", { incarnation, message });
     if (!exchange.accepted) return;
-    return receive(message, frame).finally(exchange.settle);
+    return receive(message, frame, exchange).finally(exchange.settle);
   }).catch((error) =>
     shutdown(1, `Invalid provider protocol: ${error.message}`),
   );

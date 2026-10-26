@@ -27,13 +27,11 @@ test("a replacement child rejects output from an earlier incarnation", () => {
   assert.equal(current.accepted, true);
 });
 
-test("provider activity invalidates the proof epoch but internal probe replies do not", () => {
-  const session = createControlledSession<{ incarnation: number; activity: boolean }>({
-    isActivityProviderFrame: (frame) => frame.activity,
-  });
+test("provider observations remain stable until the adapter reports changed evidence", () => {
+  const session = createControlledSession<{ incarnation: number }>();
   const incarnation = session.control({ op: "replace" });
   const passiveCheckpoint = session.control({ op: "checkpoint" });
-  session.exchange("provider", { incarnation, activity: false }).settle();
+  session.exchange("provider", { incarnation }).settle();
   assert.equal(
     session.control({ op: "release", checkpoint: passiveCheckpoint, evidence: safeEvidence() })
       .status,
@@ -41,10 +39,24 @@ test("provider activity invalidates the proof epoch but internal probe replies d
   );
 
   const activityCheckpoint = session.control({ op: "checkpoint" });
-  session.exchange("provider", { incarnation, activity: true }).settle();
+  const activity = session.exchange("provider", { incarnation });
+  activity.invalidate();
+  activity.settle();
   assert.equal(
     session.control({ op: "release", checkpoint: activityCheckpoint, evidence: safeEvidence() })
       .status,
     "busy",
+  );
+
+  const replacement = session.control({ op: "replace" });
+  const replacementCheckpoint = session.control({ op: "checkpoint" });
+  const stale = session.exchange("provider", { incarnation });
+  stale.invalidate();
+  stale.settle();
+  assert.equal(replacement, incarnation + 1);
+  assert.equal(
+    session.control({ op: "release", checkpoint: replacementCheckpoint, evidence: safeEvidence() })
+      .status,
+    "safe",
   );
 });

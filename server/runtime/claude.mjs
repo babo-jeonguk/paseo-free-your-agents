@@ -49,12 +49,6 @@ const isPassiveClientFrame = (message) =>
   message?.type === "control_request" && readTypes.has(message.request?.subtype);
 const session = createControlledSession({
   isPassiveClientFrame,
-  isActivityProviderFrame: ({ message }) =>
-    !(
-      message?.type === "control_response" &&
-      typeof message.response?.request_id === "string" &&
-      message.response.request_id.startsWith("free-your-agents-internal-")
-    ),
 });
 const settingTypes = new Set([
   "set_model",

@@ -8,6 +8,8 @@ export interface SessionCheckpoint {
 export interface SessionExchange {
   readonly accepted: boolean;
   readonly incarnation: number;
+  /** Mark an accepted provider exchange as changing release evidence. */
+  invalidate(): void;
   settle(): void;
 }
 
@@ -29,5 +31,4 @@ export interface ControlledSession<Frame = unknown> {
 
 export function createControlledSession<Frame = unknown>(options?: {
   isPassiveClientFrame?: (frame: Frame) => boolean;
-  isActivityProviderFrame?: (frame: Frame) => boolean;
 }): ControlledSession<Frame>;
