@@ -196,7 +196,7 @@ test("Claude bridge accepts reservations during its first turn and protects fore
       ),
     );
     const bridge = spawn(process.execPath, [fileURLToPath(new URL("./runtime/claude.mjs", import.meta.url)), process.execPath, script, root, version, observerMode, ...(disabled ? ["--bare"] : [])], {
-      env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, ...env, RUNTIME_PROXY_FIXTURE: "1", RUNTIME_PROXY_STARTUP_TIMEOUT_MS: observerMode === "slow-wake" ? "10000" : "1000" },
+      env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, ...env, RUNTIME_PROXY_FIXTURE: "1", RUNTIME_PROXY_STARTUP_TIMEOUT_MS: observerMode === "slow-wake" ? "20000" : "1000" },
       stdio: ["pipe", "pipe", "pipe"],
     });
     let stderr = "", stdout = "";
@@ -371,7 +371,10 @@ test("Claude bridge accepts reservations during its first turn and protects fore
       if (process.platform !== "win32")
         assert.equal(await readFile(join(root, "sigint"), "utf8"), "yes", "SIGINT ended the turn");
       assert.equal((await readFile(join(root, "spawns"), "utf8")).trim().split("\n").length, 2);
-      if (observerMode !== "drain-flood") {
+      if (observerMode === "drain-flood")
+        // Waiting settings reach a stopped conversation and get its answer.
+        assert.match(stdout, /"request_id":"flood-299","error":"Runtime is stopped; send a message to resume before this operation."/);
+      else {
         await waitFor(async () => stdout, (value) => value.includes('"request_id":"stop"'));
         if (observerMode === "drain-withdraw")
           assert.equal(await readFile(join(root, "native-cancel"), "utf8"), "yes", "The resumed native answered the withdrawal");

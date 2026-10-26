@@ -2,8 +2,9 @@
 // Release follows the CLI's documented contract: idle is the authoritative
 // turn-over signal, background_tasks_changed is the level set of live background
 // work, and the SDK Stop hook reports scheduled wakeups. A release ends input and
-// lets native finish anything it started itself before exiting; it is never
-// killed mid-turn. Never reinitialize a running CLI to probe it: that can cancel
+// lets native finish anything it started itself before exiting; no deadline cuts
+// that short, only the user's stop gesture or an input backlog (see
+// interruptDrain). Never reinitialize a running CLI to probe it: that can cancel
 // existing hook requests.
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -361,7 +362,7 @@ async function stopNative() {
 // turns it started itself (a task notification racing this release included),
 // fails permission prompts it can no longer ask, and exits. It completes once
 // native has exited and all of its output has been read (stdio can outlive the
-// exit); the bridge signals native only when the user interrupts.
+// exit); the bridge signals native only through interruptDrain().
 function drain(id, expectedGeneration) {
   const current = child;
   const finished = Promise.all([once(current, "exit"), nativeOutput]);
@@ -396,7 +397,7 @@ const stopsWork = (message) =>
 // Ends the turn a draining native is finishing. SIGINT is native's documented way
 // to end a turn without input, sent to its process group like a terminal Ctrl-C;
 // Windows has no SIGINT for another process, so there it is a forced exit. The
-// input that asked for it is then answered by the resumed native itself.
+// waiting input is then processed like any input to a stopped conversation.
 function interruptDrain() {
   if (!child || drainInterrupted) return;
   drainInterrupted = true;
@@ -539,7 +540,9 @@ async function wake() {
   phase = "running";
 }
 async function incoming(message, frame) {
-  // Input arriving during a drain is delivered to the resumed session.
+  // Input arriving during a drain is processed once native is gone, as for a
+  // stopped conversation: a user message resumes it, other requests get the
+  // stopped runtime's answers.
   if (draining) await draining;
   if (message.type === "user") {
     if (phase === "released") await wake();
