@@ -35,9 +35,9 @@
     "prepack": "npm run build:runtime && npm run check"
   },
   "devDependencies": {
-    "@getpaseo/client": "0.11.2",
-    "@getpaseo/plugin": "0.11.2",
-    "@getpaseo/protocol": "0.11.2",
+    "@getpaseo/client": "0.13.0",
+    "@getpaseo/plugin": "0.13.0",
+    "@getpaseo/protocol": "0.13.0",
     "@tanstack/react-query": "^5.90.11",
     "@types/node": "^22.20.4",
     "@types/react": "~19.2.0",

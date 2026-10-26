@@ -1,5 +1,5 @@
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
-import { Icon } from "@getpaseo/plugin/client/react-native";
+import { Icon } from "@getpaseo/plugin/client/ui";
 import { Image, View } from "react-native";
 import type { Row } from "../shared/model";
 import { category } from "./filter";

@@ -1,6 +1,6 @@
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { useRpc } from "@getpaseo/plugin/client";
-import { Icon, Modal, ScrollView, TextInput } from "@getpaseo/plugin/client/react-native";
+import { Icon, Modal, ScrollView, TextInput } from "@getpaseo/plugin/client/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { memo, useCallback, useEffect, useMemo, useReducer, useRef, useState, type Ref } from "react";
 import { ActivityIndicator, Platform, Pressable, Text, View } from "react-native";
