@@ -99,6 +99,9 @@ export function createControl(store: StateStore, now: () => number = Date.now) {
           runtime.generation !== stop.generation);
       if (obsolete) {
         value.stops = value.stops.filter((entry) => entry.id !== stop.id);
+        // The process ended while this stop was in flight: that exit is the stop.
+        if (stop.state === "stopping" && runtime?.presence === "absent" && open.has(stop.agentId))
+          value.stoppedIds = [...new Set([...value.stoppedIds, stop.agentId])];
         changed = true;
         continue;
       }
@@ -156,6 +159,9 @@ export function createControl(store: StateStore, now: () => number = Date.now) {
             generation: null,
           });
         }
+      } else if (result.status === "stopping") {
+        // Committed; confirm with the same operation ID until the process exits.
+        stop.error = null;
       } else {
         stop.state = result.status === "busy" ? "deferred" : "failed";
         stop.error = result.error;

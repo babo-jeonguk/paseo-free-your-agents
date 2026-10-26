@@ -522,6 +522,48 @@ test("a lost release response cannot be acknowledged as cancelled while the daem
   assert.equal((await control.list()).rows[0].stop, null);
 });
 
+test("a stop the provider is still finishing stays in progress and completes when the process exits", async (t) => {
+  const { control, owner, api, runtimes } = await setup(t);
+  await owner("desktop", ["a"]);
+  const requests: string[] = [];
+  control.attach({
+    ...api,
+    releaseIfIdle: async ({ requestId }) => {
+      requests.push(requestId);
+      return { status: "stopping", error: null };
+    },
+  });
+  await control.change({
+    agentId: "a",
+    expectedGeneration: "boot:1",
+    expectedStopId: null,
+    action: "now",
+  });
+  const finishing = (await control.list()).rows[0]!;
+  assert.equal(finishing.stop?.state, "stopping");
+  assert.equal(finishing.stop?.error, null);
+  assert.equal(finishing.stopped, false);
+  const cancelled = await control.change({
+    agentId: "a",
+    expectedGeneration: "boot:1",
+    expectedStopId: finishing.stop!.id,
+    action: "cancel",
+  });
+  assert.match(cancelled.reason!, /already in progress/);
+  await control.tick();
+  assert.deepEqual(requests, [finishing.stop!.id, finishing.stop!.id], "The same stop is confirmed again");
+  runtimes.set("a", {
+    ...runtimes.get("a")!,
+    presence: "absent",
+    generation: null,
+    memoryBytes: 0,
+  });
+  await control.tick();
+  const [row] = (await control.list()).rows;
+  assert.equal(row.stop, null);
+  assert.equal(row.stopped, true);
+});
+
 test("disconnected owners keep their last tabs as Sync pending", async (t) => {
   const { control, owner, advance } = await setup(t);
   await owner("desktop", ["a"]);

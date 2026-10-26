@@ -60,6 +60,7 @@ const SnapshotSchema = z.object({
 const OutcomeSchema = z.object({
   status: z.enum([
     "released",
+    "stopping",
     "absent",
     "busy",
     "generation-changed",
