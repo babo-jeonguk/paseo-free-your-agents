@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { stat } from "node:fs/promises";
 import { listenControl } from "./control.mjs";
-import { codexVersions } from "./versions.mjs";
+import { createControlledSession } from "./controlled-session.mjs";
 import { claimProxyConnection } from "../proxy-launch.mjs";
 import { ownProxyLease } from "../proxy-lease.mjs";
 import { createReplyCache } from "../proxy-cache.mjs";
@@ -62,22 +62,38 @@ const reads = new Set([
   "thread/goal/get",
   "thread/backgroundTerminals/list",
 ]);
+const session = createControlledSession({
+  isPassiveClientFrame: (message) =>
+    typeof message?.method === "string" &&
+    Object.hasOwn(message, "id") &&
+    reads.has(message.method),
+  isActivityProviderFrame: ({ message }) =>
+    !(
+      Object.hasOwn(message, "id") &&
+      !message.method &&
+      typeof message.id === "string" &&
+      message.id.startsWith(prefix)
+    ),
+});
+// Codex reports a failed turn as systemError after execution has stopped.
+// Goal, terminal, request, history, and activity-revision guards below still
+// have to prove that the thread is safe to release.
+const settledThreadStatuses = new Set(["idle", "systemError"]);
 let phase = "starting",
   child = null,
   generation = null,
   spawns = 0,
   serial = 0;
 let initialize = null,
-  root = null;
+  root = null,
+  providerVersion = null;
 let saved = true,
   quitting = false,
   suppressNotifications = false;
-let writeAdmissions = 0,
-  tail = Promise.resolve();
+let tail = Promise.resolve();
 let protocolSupported = false;
 let boundedMethods = true;
 let closeControl = async () => {};
-let activityRevision = 0;
 const unfinishedGoals = createProtocolTracker();
 const trackingComplete = () =>
   boundedMethods &&
@@ -116,6 +132,7 @@ async function snapshot() {
     controlVersion: 1,
     connectionId: process.env.RUNTIME_PROXY_CONNECTION_ID ?? null,
     agentId: process.env.RUNTIME_PROXY_AGENT_ID ?? null,
+    providerVersion,
     releaseSupported: protocolSupported && trackingComplete(),
     unavailableReason: trackingComplete()
       ? undefined
@@ -171,8 +188,6 @@ function request(method, params = {}) {
 }
 function notification(message) {
   const params = message.params ?? {};
-  if (/^(turn\/|item\/|thread\/(started|status\/changed|goal\/))/.test(message.method))
-    activityRevision++;
   if (message.method === "thread/goal/updated") {
     if (params.goal?.status === "complete") unfinishedGoals.delete(params.threadId);
     else unfinishedGoals.add(params.threadId);
@@ -208,10 +223,11 @@ async function receive(message, frame) {
         cache.set(key(original.method, original.params), message.result);
       if (original.method === "initialize") {
         initialize = original.params;
-        const agent = message.result?.userAgent ?? "";
-        protocolSupported = codexVersions.some((version) =>
-          new RegExp(`/${version.replaceAll(".", "\\.")}(?:\\s|$)`).test(agent),
-        );
+        providerVersion =
+          typeof message.result?.userAgent === "string" ? message.result.userAgent : null;
+        // The version is diagnostic metadata. Successful initialization and
+        // the release-time structural probes below establish compatibility.
+        protocolSupported = true;
       }
       if (original.method === "thread/start" || original.method === "thread/resume") {
         // Retain identity only. Native resume/start replies can contain the
@@ -227,6 +243,7 @@ async function receive(message, frame) {
   await (frame ? writer.forward(frame) : output(message));
 }
 async function launch() {
+  const incarnation = session.control({ op: "replace" });
   const nativeEnv = Object.fromEntries(
     Object.entries(process.env).filter(
       ([name]) =>
@@ -246,7 +263,9 @@ async function launch() {
   spawns++;
   void pumpJsonLines(spawned.stdout, (message, frame) => {
     reclaimer.note(frame);
-    return receive(message, frame);
+    const exchange = session.exchange("provider", { incarnation, message });
+    if (!exchange.accepted) return;
+    return receive(message, frame).finally(exchange.settle);
   }).catch((error) =>
     shutdown(1, `Invalid provider protocol: ${error.message}`),
   );
@@ -331,40 +350,70 @@ async function release(expectedGeneration) {
   if (!protocolSupported)
     return {
       status: "unsupported",
-      reason: "This Codex protocol version has not been validated for process control",
+      reason: "The Codex protocol contract could not be validated for process control",
     };
   if (!trackingComplete())
     return {
       status: "unsupported",
       reason: "Protocol tracking capacity was exceeded. The process was left running.",
     };
-  if (forwarded.size || serverRequests.size || turns.size || writeAdmissions)
+  if (
+    forwarded.size ||
+    serverRequests.size ||
+    turns.size ||
+    session.control({ op: "snapshot" }).admissions
+  )
     return { status: "busy", reason: "Work or requests pending" };
-  const probeRevision = activityRevision;
+  const checkpoint = session.control({ op: "checkpoint" });
   const loaded = await request("thread/loaded/list");
   if (!Array.isArray(loaded.data) || !loaded.data.includes(root.thread.id))
     throw new Error("Cannot establish loaded thread ownership");
   if (loaded.nextCursor != null)
-    return { status: "busy", reason: "Loaded thread inventory is incomplete" };
+    return {
+      status: "unsupported",
+      reason: "The provider could not supply a complete work inventory.",
+    };
   if (loaded.data.length > 100)
     return {
       status: "unsupported",
       reason: "Too many native threads to capture a complete replay safely.",
     };
   let rootSnapshot;
+  const subjects = [];
   for (const id of loaded.data) {
     const result = await request("thread/read", { threadId: id, includeTurns: false });
-    if (result.thread?.status?.type !== "idle")
-      return { status: "busy", reason: "Native thread is not idle" };
+    const type = result.thread?.status?.type;
     const goal = await request("thread/goal/get", { threadId: id });
-    if (!Object.hasOwn(goal, "goal")) throw new Error("Unknown goal response");
-    if (goal.goal && goal.goal.status !== "complete")
-      return { status: "busy", reason: "Native goal may continue" };
-    unfinishedGoals.delete(id);
     const background = await request("thread/backgroundTerminals/list", { threadId: id, limit: 1 });
-    if (!Array.isArray(background.data)) throw new Error("Unknown background terminal response");
-    if (background.data.length || background.nextCursor != null)
-      return { status: "busy", reason: "Background terminal is running" };
+    const goalValue = Object.hasOwn(goal, "goal") ? goal.goal : undefined;
+    const goalState =
+      goalValue === null
+        ? "complete"
+        : goalValue &&
+            typeof goalValue === "object" &&
+            !Array.isArray(goalValue) &&
+            typeof goalValue.status === "string" &&
+            goalValue.status.length > 0
+          ? goalValue.status === "complete"
+            ? "complete"
+            : "unfinished"
+          : "unknown";
+    const backgroundState = !Array.isArray(background.data)
+      ? "unknown"
+      : background.data.length || background.nextCursor != null
+        ? "present"
+        : "none";
+    if (goalState === "complete") unfinishedGoals.delete(id);
+    subjects.push({
+      execution: settledThreadStatuses.has(type)
+        ? "settled"
+        : type === "active"
+          ? "active"
+          : "unknown",
+      goal: goalState,
+      background: backgroundState,
+      scheduled: "none",
+    });
     if (id === root.thread.id) rootSnapshot = result;
   }
   if (!rootSnapshot) throw new Error("Root thread snapshot is missing");
@@ -447,20 +496,21 @@ async function release(expectedGeneration) {
       status: "unsupported",
       reason: "Encrypted history verification failed. The process was left running.",
     };
-  // Feature availability alone is not work. Every loaded native thread must be
-  // idle and have no unfinished goal, and work notifications must not have
-  // changed while probing. No goal is paused/cleared as a side effect of stop.
-  if (
-    !trackingComplete() ||
-    forwarded.size ||
-    serverRequests.size ||
-    turns.size ||
-    writeAdmissions ||
-    unfinishedGoals.size ||
-    activityRevision !== probeRevision
-  ) {
-    return { status: "busy", reason: "New work arrived during probe" };
-  }
+  const verdict = session.control({
+    op: "release",
+    checkpoint,
+    evidence: {
+      protocolSupported,
+      trackingComplete: trackingComplete(),
+      inventoryComplete: true,
+      pendingWork:
+        forwarded.size + serverRequests.size + turns.size + unfinishedGoals.size,
+      subjects,
+      resumeDurable: saved,
+      stable: true,
+    },
+  });
+  if (verdict.status !== "safe") return verdict;
   phase = "stopping";
   await stopChild();
   phase = "released";
@@ -568,10 +618,9 @@ await launch();
 phase = "running";
 void pumpJsonLines(process.stdin, async (message, frame) => {
   reclaimer.note(frame);
-  const execution = message.method === "turn/start";
-  if (execution) writeAdmissions++;
+  const admission = session.exchange("client", message);
   await enqueue(async () => {
-    if (execution) writeAdmissions--;
+    admission.settle();
     try {
       await incoming(message, frame);
     } catch (error) {

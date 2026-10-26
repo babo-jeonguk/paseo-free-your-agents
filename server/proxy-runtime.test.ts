@@ -82,6 +82,7 @@ async function setup(
       backgroundTasks: 0,
       sessionCrons: 0,
       unavailableReason: undefined as string | undefined,
+      providerVersion: "fixture-version" as string | null,
     };
     const server = createServer((socket) => {
       connections.add(socket);
@@ -164,6 +165,7 @@ test(
     const [after] = await reload().api.snapshot({ agentIds: ["a"] });
     assert.deepEqual(after, before);
     assert.equal(before!.generation, record.connectionId + ":" + state.generation);
+    assert.equal(before!.providerVersion, "fixture-version");
     assert.ok(requests.every((message) => message.op === "snapshot"));
     assert.ok(
       !JSON.stringify(before).includes(record.token),

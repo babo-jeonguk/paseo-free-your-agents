@@ -1,10 +1,8 @@
 import { constants } from "node:fs";
 import { open, lstat } from "node:fs/promises";
-import { spawn, execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { spawn } from "node:child_process";
 import { dirname } from "node:path";
 import { controlSupported, nativeCommand, ownerOnly, signalNative } from "../platform.mjs";
-import { claudeVersions } from "./versions.mjs";
 
 // Set only by our shim so an Electron runtime starts as Node. Paseo never
 // passes it to CLIs, so remove it before any native process inherits it.
@@ -71,28 +69,6 @@ if (!interactive) {
     process.exit(code ?? (signal ? 1 : 0));
   });
 } else {
-  if (profile.provider === "claude") {
-    // Do not inject an observer into an unvalidated CLI initialization. Failed
-    // probes disable process control while preserving ordinary CLI behavior.
-    try {
-      const native = nativeCommand(
-        profile.command[0],
-        [...profile.command.slice(1), "--version"],
-        nativeEnv,
-      );
-      const { stdout } = await promisify(execFile)(native.file, native.args, {
-        ...native.options,
-        detached: false,
-        env: nativeEnv,
-        timeout: 5000,
-        maxBuffer: 4096,
-      });
-      if (claudeVersions.includes(stdout.trim().split(/\s/)[0]))
-        process.env.RUNTIME_PROXY_CLAUDE_VALIDATED = "1";
-    } catch {
-      /* Normal SDK messages still pass through. */
-    }
-  }
   process.argv = [process.execPath, process.argv[1], ...profile.command, ...args];
   await import(new URL(profile.provider + ".mjs", import.meta.url).href);
 }

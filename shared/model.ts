@@ -9,6 +9,8 @@ export const RuntimeSchema = z.object({
   agentId: z.string(),
   title: z.string(),
   provider: z.string(),
+  // Diagnostic only; release capability is established from live evidence.
+  providerVersion: z.string().nullable().optional(),
   // Resolved profile ancestry for display; provider retains the original ID.
   baseProvider: z.enum(["codex", "claude"]).optional(),
   workspace: z.string(),

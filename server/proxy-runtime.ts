@@ -55,6 +55,7 @@ const SnapshotSchema = z.object({
   unavailableReason: z.string().max(500).optional(),
   nativeMemoryBytes: z.number().nonnegative().nullable().optional(),
   nativeMemoryKind: z.enum(["pss", "rss"]).optional(),
+  providerVersion: z.string().nullable().optional(),
 });
 const OutcomeSchema = z.object({
   status: z.enum([
@@ -321,6 +322,7 @@ export function createProxyRuntime(options: {
               0;
             return {
               ...info,
+              providerVersion: view.providerVersion,
               generation: absent ? null : generation(record, view.generation),
               presence: absent ? "absent" : "running",
               activity: absent

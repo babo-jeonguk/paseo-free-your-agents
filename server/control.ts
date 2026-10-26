@@ -11,18 +11,17 @@ import type {
 } from "../shared/model";
 import { HoursSchema } from "../shared/model";
 import type { State, StateStore } from "./store";
+import { createOwnerLeaseRegistry } from "./owner-leases";
 
 type TabReport = z.input<typeof publishTabsRpc.input>;
 type StopChange = z.output<typeof changeStopRpc.input>;
-const FRESH_MS = 45_000;
 
 export function createControl(store: StateStore, now: () => number = Date.now) {
   let state: State | null = null;
   let api: RuntimeApi | null = null;
   let selectForeground: (ids: string[]) => Promise<string[]> = async (ids) => ids;
   let tail: Promise<unknown> = Promise.resolve();
-  // Freshness is in memory: after a restart every owner is stale until it reports.
-  const seen = new Map<string, number>();
+  const leases = createOwnerLeaseRegistry(now);
 
   function serialize<T>(work: () => Promise<T>): Promise<T> {
     const next = tail.then(work);
@@ -38,26 +37,10 @@ export function createControl(store: StateStore, now: () => number = Date.now) {
     await store.write(next);
     state = next;
   }
-  function membership(value: State) {
-    const rows = new Map<
-      string,
-      { ownerCount: number; syncPending: boolean; hasSharedTabs: boolean }
-    >();
-    for (const owner of value.owners) {
-      const stale = now() - (seen.get(owner.id) ?? -Infinity) > FRESH_MS;
-      for (const id of owner.agentIds) {
-        const row = rows.get(id) ?? {
-          ownerCount: 0,
-          syncPending: false,
-          hasSharedTabs: false,
-        };
-        row.ownerCount += 1;
-        row.syncPending ||= stale;
-        row.hasSharedTabs ||= owner.sharedAgentIds.includes(id);
-        rows.set(id, row);
-      }
-    }
-    return rows;
+  async function reconcileOwners() {
+    const result = leases.reconcile(await current());
+    if (result.dirty) await save(result.state);
+    return result.state;
   }
   function missing(id: string): Runtime {
     return {
@@ -74,7 +57,7 @@ export function createControl(store: StateStore, now: () => number = Date.now) {
     };
   }
   async function managedMembership(value: State) {
-    const open = membership(value);
+    const open = leases.membership(value);
     if (value.management.includeBackground || open.size === 0) return open;
     const foreground = new Set(await selectForeground([...open.keys()]));
     return new Map([...open].filter(([id]) => foreground.has(id)));
@@ -90,15 +73,20 @@ export function createControl(store: StateStore, now: () => number = Date.now) {
     return new Map(entries.map((runtime) => [runtime.agentId, runtime]));
   }
   async function tickInternal(): Promise<void> {
+    const reconciled = await reconcileOwners();
     if (!api || !api.supported()) return;
     // Only pending stops need runtime status, so a host without one polls
     // nothing. list() reconciles stopped rows, as it reads every row's status.
-    if ((await current()).stops.length === 0) return;
-    const value = structuredClone(await current());
+    if (reconciled.stops.length === 0) return;
+    const value = structuredClone(reconciled);
     const open = await managedMembership(value);
     const runtimes = await snapshots(
       open,
-      new Set(value.stops.map((stop) => stop.agentId)),
+      new Set(
+        value.stops
+          .filter((stop) => open.get(stop.agentId)?.confirmed)
+          .map((stop) => stop.agentId),
+      ),
     );
     let changed = false;
     for (const stop of [...value.stops]) {
@@ -112,6 +100,14 @@ export function createControl(store: StateStore, now: () => number = Date.now) {
       if (obsolete) {
         value.stops = value.stops.filter((entry) => entry.id !== stop.id);
         changed = true;
+        continue;
+      }
+      if (!open.get(stop.agentId)?.confirmed) {
+        if (stop.dueAt <= now() && !["failed", "stopping"].includes(stop.state)) {
+          stop.state = "deferred";
+          stop.error = "Open tabs are waiting to resynchronize. The stop is deferred.";
+          changed = true;
+        }
         continue;
       }
       if (stop.dueAt > now() || stop.state === "failed") continue;
@@ -176,7 +172,7 @@ export function createControl(store: StateStore, now: () => number = Date.now) {
   function stillStopped(
     value: State,
     runtimes: Map<string, Runtime>,
-    open = membership(value),
+    open = leases.membership(value),
   ) {
     return value.stoppedIds.filter(
       (id) => open.has(id) && runtimes.get(id)?.presence !== "running",
@@ -192,7 +188,7 @@ export function createControl(store: StateStore, now: () => number = Date.now) {
     },
     changeManagement(input: Management) {
       return serialize(async () => {
-        const value = structuredClone(await current());
+        const value = structuredClone(await reconcileOwners());
         value.management = { ...input };
         const open = await managedMembership(value);
         const excluded = value.stops.filter((stop) => !open.has(stop.agentId));
@@ -208,66 +204,21 @@ export function createControl(store: StateStore, now: () => number = Date.now) {
     },
     register(ownerId: string) {
       return serialize(async () => {
-        const value = structuredClone(await current());
-        const previous = value.owners.find((owner) => owner.id === ownerId);
-        const epoch = randomUUID();
-        value.owners = value.owners.filter((owner) => owner.id !== ownerId);
-        value.owners.push({
-          id: ownerId,
-          epoch,
-          revision: -1,
-          agentIds: previous?.agentIds ?? [],
-          sharedAgentIds: previous?.sharedAgentIds ?? [],
-          seenAt: previous?.seenAt ?? 0,
-        });
-        seen.delete(ownerId);
-        await save(value);
-        return epoch;
+        const result = leases.claim(await reconcileOwners(), ownerId);
+        await save(result.state);
+        return result.epoch;
       });
     },
     publish(report: TabReport) {
       return serialize(async () => {
-        const owner = (await current()).owners.find(
-          (entry) => entry.id === report.ownerId,
-        );
-        if (
-          !owner ||
-          owner.epoch !== report.epoch ||
-          report.revision < owner.revision
-        )
-          return false;
-        // Retries may refresh freshness, but a revision cannot change its tab set.
-        const ids = [...new Set(report.agentIds)].sort();
-        const sharedIds = [...new Set(report.sharedAgentIds ?? [])]
-          .filter((id) => ids.includes(id))
-          .sort();
-        if (report.revision === owner.revision) {
-          if (
-            JSON.stringify(ids) !== JSON.stringify(owner.agentIds) ||
-            JSON.stringify(sharedIds) !== JSON.stringify(owner.sharedAgentIds)
-          )
-            return false;
-          // A periodic report changes nothing on disk; skip the clone and write.
-          seen.set(owner.id, now());
-          return true;
-        }
-        const value = structuredClone(await current());
-        const next = value.owners.find((entry) => entry.id === owner.id)!;
-        next.revision = report.revision;
-        next.agentIds = ids;
-        next.sharedAgentIds = sharedIds;
-        next.seenAt = now();
-        const open = membership(value);
-        value.stops = value.stops.filter((stop) => open.has(stop.agentId));
-        value.stoppedIds = value.stoppedIds.filter((id) => open.has(id));
-        await save(value);
-        seen.set(owner.id, now());
-        return true;
+        const result = leases.renew(await current(), report);
+        if (result.dirty) await save(result.state);
+        return result.accepted;
       });
     },
     list(): Promise<Inventory> {
       return serialize(async () => {
-        let value = await current();
+        let value = await reconcileOwners();
         const supported = api !== null && api.supported();
         const open = await managedMembership(value);
         const runtimes = await snapshots(open);
@@ -280,9 +231,10 @@ export function createControl(store: StateStore, now: () => number = Date.now) {
         const rows: Row[] = [];
         for (const [id, presence] of open) {
           const runtime = runtimes.get(id) ?? missing(id);
+          const { confirmed: _confirmed, ...visiblePresence } = presence;
           rows.push({
             runtime,
-            ...presence,
+            ...visiblePresence,
             stopped:
               runtime.presence === "absent" && value.stoppedIds.includes(id),
             stop: value.stops.find((stop) => stop.agentId === id) ?? null,
@@ -300,7 +252,7 @@ export function createControl(store: StateStore, now: () => number = Date.now) {
     },
     change(input: StopChange) {
       return serialize(async () => {
-        const value = structuredClone(await current());
+        const value = structuredClone(await reconcileOwners());
         const previous = value.stops.find(
           (stop) => stop.agentId === input.agentId,
         );
@@ -327,6 +279,11 @@ export function createControl(store: StateStore, now: () => number = Date.now) {
           return {
             changed: false,
             reason: "This conversation is outside the managed open tabs.",
+          };
+        if (!open.get(input.agentId)?.confirmed)
+          return {
+            changed: false,
+            reason: "Open tabs are waiting to resynchronize.",
           };
         const runtime = (await snapshots(open, [input.agentId])).get(
           input.agentId,

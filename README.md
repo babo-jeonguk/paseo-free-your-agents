@@ -21,7 +21,7 @@ It helps when many conversations stay open: each one keeps its CLI process runni
 
 - **Daemon host:** Linux or Windows. On macOS the screen loads, but process controls are unavailable.
 - **Paseo:** v0.11 or later, with plugins enabled.
-- **Agent CLIs:** process control is validated with Codex v0.162.1 and v0.163.0, and Claude v2.1.299 and v2.1.301. With other versions, conversations work normally but process control stays off.
+- **Agent CLIs:** process control is verified from the live protocol contract rather than an exact CLI version list. Unknown or incomplete protocol evidence leaves the process running.
 - **Windows:** Claude needs Node.js on `PATH`, because Paseo starts Claude without a shell.
 - **Apps:** tested in Paseo's web app. Native iOS and Android apps are not validated yet.
 
@@ -89,7 +89,7 @@ Paseo v0.11 has no public plugin API to release an idle provider process without
 ## Troubleshooting
 
 - **An existing conversation shows Status unavailable.** It was open before the plugin was installed. Restart the Paseo daemon to give it process control.
-- **Process control turned off after a CLI update.** That CLI version is not validated yet. Conversations keep working; stopping stays off until it is.
+- **Process control turned off after a CLI update.** The updated CLI did not provide the complete protocol evidence needed for a safe stop. Conversations keep working and the process stays running.
 - **A total shows `296+ MB`.** Some conversations are not measured yet. The number is the sum of the measured ones.
 - **A stop does not happen right away.** The agent is busy. The stop waits until its work finishes.
 - **Some memory remains after a stop.** The bridge stays running and is not part of the totals.

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createControl } from "./control";
 import { createFileStore } from "./store";
+import { OWNER_RETIRE_MS } from "./owner-leases";
 import type { Runtime, RuntimeApi } from "../shared/model";
 
 async function setup(t: { after(fn: () => Promise<void>): void }) {
@@ -72,6 +73,7 @@ async function setup(t: { after(fn: () => Promise<void>): void }) {
     advance: (ms: number) => {
       clock += ms;
     },
+    now: () => clock,
   };
 }
 
@@ -180,7 +182,7 @@ test("child-only tabs retain one parent process across owners and revision share
 
 test("process stop keeps its row, consumes its policy, and cancellation never starts a process", async (t) => {
   const { control, owner, releases } = await setup(t);
-  await owner("desktop", ["a"]);
+  const epoch = await owner("desktop", ["a"]);
   assert.deepEqual(
     await control.change({
       agentId: "a",
@@ -247,7 +249,7 @@ test("stopped conversations are not polled in the background and reconcile when 
 
 test("a new reservation during Claude work keeps its deadline when work finishes early", async (t) => {
   const f = await setup(t);
-  await f.owner("desktop", ["a"]);
+  const epoch = await f.owner("desktop", ["a"]);
   const runtime = f.runtimes.get("a")!;
   Object.assign(runtime, {
     provider: "claude",
@@ -264,18 +266,20 @@ test("a new reservation during Claude work keeps its deadline when work finishes
   assert.equal(stop.state, "scheduled");
   assert.deepEqual(f.releases, []);
   f.advance(1_200_000);
+  await f.control.publish({ ownerId: "desktop", epoch, revision: 0, agentIds: ["a"] });
   runtime.activity = "idle";
   runtime.releasable = true;
   await f.control.tick();
   assert.deepEqual(f.releases, [], "Finishing work does not shorten the reservation");
   f.advance(2_400_000);
+  await f.control.publish({ ownerId: "desktop", epoch, revision: 0, agentIds: ["a"] });
   await f.control.tick();
   assert.deepEqual(f.releases, ["a"]);
 });
 
 test("a reservation made during work waits past its deadline for work and safety checks", async (t) => {
   const f = await setup(t);
-  await f.owner("desktop", ["a"]);
+  const epoch = await f.owner("desktop", ["a"]);
   const runtime = f.runtimes.get("a")!;
   Object.assign(runtime, { provider: "claude", activity: "working", releasable: false, schedulable: true });
   assert.equal((await f.control.change({
@@ -283,6 +287,7 @@ test("a reservation made during work waits past its deadline for work and safety
     action: "schedule", hours: 0.25,
   })).changed, true);
   f.advance(900_000);
+  await f.control.publish({ ownerId: "desktop", epoch, revision: 0, agentIds: ["a"] });
   for (const activity of ["working", "background", "idle"] as const) {
     runtime.activity = activity;
     await f.control.tick();
@@ -331,7 +336,7 @@ test("working reservations can be updated and cancelled, but unsupported or stal
 
 test("the fixed deadline is deferred through foreground and background work", async (t) => {
   const { control, owner, runtimes, releases, advance } = await setup(t);
-  await owner("desktop", ["a"]);
+  const epoch = await owner("desktop", ["a"]);
   await control.change({
     agentId: "a",
     expectedGeneration: "boot:1",
@@ -340,6 +345,7 @@ test("the fixed deadline is deferred through foreground and background work", as
     hours: 1,
   });
   advance(3_600_000);
+  await control.publish({ ownerId: "desktop", epoch, revision: 0, agentIds: ["a"] });
   runtimes.get("a")!.activity = "working";
   await control.tick();
   const stop = (await control.list()).rows[0].stop!;
@@ -414,7 +420,7 @@ test("old reports, stale edits, and cancelled retries cannot change newer state"
 test("persisted schedules never stop a new runtime after daemon restart", async (t) => {
   const { control, owner, store, runtimes, api, releases, advance } =
     await setup(t);
-  await owner("desktop", ["a"]);
+  const epoch = await owner("desktop", ["a"]);
   await control.change({
     agentId: "a",
     expectedGeneration: "boot:1",
@@ -423,10 +429,18 @@ test("persisted schedules never stop a new runtime after daemon restart", async 
     hours: 1,
   });
   advance(3_600_000);
+  await control.publish({ ownerId: "desktop", epoch, revision: 0, agentIds: ["a"] });
   runtimes.get("a")!.generation = "new-boot:1";
-  const restarted = createControl(store);
+  const restarted = createControl(store, () => 3_700_000);
   restarted.attach(api);
   assert.equal((await restarted.list()).rows[0].syncPending, true);
+  const restartedEpoch = await restarted.register("desktop");
+  await restarted.publish({
+    ownerId: "desktop",
+    epoch: restartedEpoch,
+    revision: 0,
+    agentIds: ["a"],
+  });
   await restarted.tick();
   assert.equal((await restarted.list()).rows[0].stop, null);
   assert.deepEqual(releases, []);
@@ -434,7 +448,7 @@ test("persisted schedules never stop a new runtime after daemon restart", async 
 
 test("unsupported hosts and release failures leave the conversation and policy visible", async (t) => {
   const { control, owner, api } = await setup(t);
-  await owner("desktop", ["a"]);
+  const epoch = await owner("desktop", ["a"]);
   control.attach(null);
   assert.equal((await control.list()).supported, false);
   assert.equal(
@@ -468,8 +482,8 @@ test("unsupported hosts and release failures leave the conversation and policy v
 });
 
 test("a lost release response cannot be acknowledged as cancelled while the daemon may still stop the process", async (t) => {
-  const { control, owner, api, runtimes } = await setup(t);
-  await owner("desktop", ["a"]);
+  const { control, owner, api, runtimes, advance, store } = await setup(t);
+  const epoch = await owner("desktop", ["a"]);
   control.attach({
     ...api,
     releaseIfIdle: async () => {
@@ -492,12 +506,18 @@ test("a lost release response cannot be acknowledged as cancelled while the daem
   });
   assert.equal(cancelled.changed, false);
   assert.match(cancelled.reason!, /already in progress/);
+  advance(OWNER_RETIRE_MS + 1);
+  await control.tick();
+  const unconfirmed = (await control.list()).rows[0]!;
+  assert.equal(unconfirmed.stop?.state, "stopping");
+  assert.equal((await store.read()).owners.length, 1);
   runtimes.set("a", {
     ...runtimes.get("a")!,
     presence: "absent",
     generation: null,
     memoryBytes: 0,
   });
+  await control.publish({ ownerId: "desktop", epoch, revision: 0, agentIds: ["a"] });
   await control.tick();
   assert.equal((await control.list()).rows[0].stop, null);
 });
@@ -530,6 +550,24 @@ test("periodic reports refresh freshness without rewriting state", async (t) => 
   );
 });
 
+test("suspect owners defer stops and abandoned owners are retired automatically", async (t) => {
+  const f = await setup(t);
+  await f.owner("desktop", ["a"]);
+  f.advance(46_000);
+  const deferred = await f.control.change({
+    agentId: "a",
+    expectedGeneration: "boot:1",
+    expectedStopId: null,
+    action: "now",
+  });
+  assert.equal(deferred.changed, false);
+  assert.match(deferred.reason!, /resynchronize/);
+  f.advance(24 * 60 * 60_000);
+  assert.deepEqual((await f.control.list()).rows, []);
+  assert.deepEqual((await f.store.read()).owners, []);
+  assert.deepEqual(f.releases, []);
+});
+
 test("background management defaults off, gates server actions, and includes only open tabs when enabled", async (t) => {
   const f = await setup(t);
   const foreground = async (ids: string[]) => ids.filter((id) => id !== "b");
@@ -546,7 +584,7 @@ test("background management defaults off, gates server actions, and includes onl
   await f.control.changeManagement({ includeBackground: true });
   assert.deepEqual((await f.control.list()).rows.map((row) => row.runtime.agentId), ["a", "b"]);
   assert.equal((await f.control.change({ ...request, agentId: "closed" })).changed, false);
-  const restarted = createControl(f.store);
+  const restarted = createControl(f.store, f.now);
   restarted.attach(f.api, foreground);
   assert.deepEqual(await restarted.management(), { includeBackground: true });
   assert.deepEqual((await restarted.list()).rows.map((row) => row.runtime.agentId), ["a", "b"]);

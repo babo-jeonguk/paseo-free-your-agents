@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { stat } from "node:fs/promises";
 import { listenControl } from "./control.mjs";
-import { claudeVersions } from "./versions.mjs";
+import { createControlledSession } from "./controlled-session.mjs";
 import { claimProxyConnection } from "../proxy-launch.mjs";
 import { ownProxyLease } from "../proxy-lease.mjs";
 import { createReplyCache } from "../proxy-cache.mjs";
@@ -19,13 +19,18 @@ const reclaimer = createMemoryReclaimer();
 
 const [binary, ...originalArgs] = process.argv.slice(2);
 if (!binary) throw new Error("Claude command required");
-const launchValidated =
-  process.env.RUNTIME_PROXY_FIXTURE === "1" || process.env.RUNTIME_PROXY_CLAUDE_VALIDATED === "1";
 const baseHooksDisabled =
-  !launchValidated ||
   originalArgs.includes("--bare") ||
   (process.env.RUNTIME_PROXY_FIXTURE !== "1" && !!process.env.CLAUDE_CODE_SIMPLE);
 let hooksDisabled = baseHooksDisabled;
+let observerState = baseHooksDisabled ? "disabled" : "negotiating";
+const configuredNegotiationTimeout = Number(process.env.RUNTIME_PROXY_NEGOTIATION_TIMEOUT_MS);
+const negotiationTimeoutMs =
+  process.env.RUNTIME_PROXY_FIXTURE === "1" &&
+  Number.isFinite(configuredNegotiationTimeout) &&
+  configuredNegotiationTimeout > 0
+    ? configuredNegotiationTimeout
+    : 5_000;
 if (process.env.RUNTIME_PROXY_RECIPE_FILE)
   Object.assign(
     process.env,
@@ -40,6 +45,17 @@ const forwarded = createProtocolTracker(),
 const settings = [],
   reads = createReplyCache();
 const readTypes = new Set(["get_settings", "get_context_usage", "mcp_status"]);
+const isPassiveClientFrame = (message) =>
+  message?.type === "control_request" && readTypes.has(message.request?.subtype);
+const session = createControlledSession({
+  isPassiveClientFrame,
+  isActivityProviderFrame: ({ message }) =>
+    !(
+      message?.type === "control_response" &&
+      typeof message.response?.request_id === "string" &&
+      message.response.request_id.startsWith("free-your-agents-internal-")
+    ),
+});
 const settingTypes = new Set([
   "set_model",
   "set_permission_mode",
@@ -48,6 +64,40 @@ const settingTypes = new Set([
 ]);
 let settingsBytes = 0;
 const trackingComplete = () => forwarded.valid() && serverRequests.valid();
+let initializationGate = Promise.resolve(),
+  finishInitialization = null,
+  observerInitializeId = null,
+  observerAccepted = false,
+  observerInitialized = false,
+  negotiationOutputs = [],
+  initializationTimer = null,
+  fallbackInitialization = null;
+function beginInitialization() {
+  observerAccepted = false;
+  observerInitialized = false;
+  negotiationOutputs = [];
+  initializationGate = new Promise((resolve) => {
+    finishInitialization = resolve;
+  });
+  initializationTimer = setTimeout(() => {
+    void fallbackToPassthrough().catch(() => shutdown(1));
+  }, negotiationTimeoutMs);
+}
+function endInitialization() {
+  clearTimeout(initializationTimer);
+  initializationTimer = null;
+  finishInitialization?.();
+  finishInitialization = null;
+}
+async function completeObserverNegotiation() {
+  if (observerState !== "negotiating" || !observerAccepted || !observerInitialized) return;
+  observerState = "controlled";
+  endInitialization();
+  const outputs = negotiationOutputs;
+  negotiationOutputs = [];
+  for (const { message, frame } of outputs)
+    await (frame ? writeProtocolBytes(process.stdout, frame) : output(message));
+}
 let child,
   generation,
   spawns = 0,
@@ -55,13 +105,13 @@ let child,
   tail = Promise.resolve(),
   quitting = false;
 let initializer = null,
+  initializerMessage = null,
   sessionId = null,
   version = null,
   nativeState = "unknown",
   safety = null;
 let activeUsers = 0,
-  admissions = 0,
-  activeGoal = false,
+  goalState = "unknown",
   backgroundTasks = 0,
   protocolSupported = true;
 let closeControl = async () => {};
@@ -127,7 +177,9 @@ async function receive(message, frame) {
     }
     serverRequests.add(message.request_id);
   }
-  if (message.type === "control_cancel_request") serverRequests.delete(message.request_id);
+  if (message.type === "control_cancel_request") {
+    serverRequests.delete(message.request_id);
+  }
   if (message.type === "control_response") {
     const id = message.response?.request_id;
     const pending = internal.get(id);
@@ -138,6 +190,23 @@ async function receive(message, frame) {
       return;
     }
     const request = forwarded.get(id);
+    if (
+      id === observerInitializeId &&
+      observerState === "negotiating"
+    ) {
+      if (message.response.subtype === "success") {
+        observerAccepted = true;
+        negotiationOutputs.push({ message, frame });
+        forwarded.delete(id);
+        await completeObserverNegotiation();
+        return;
+      } else {
+        await fallbackToPassthrough();
+        return;
+      }
+    } else if (id === observerInitializeId) {
+      endInitialization();
+    }
     forwarded.delete(id);
     if (request && message.response.subtype === "success") {
       if (readTypes.has(request.subtype))
@@ -168,13 +237,28 @@ async function receive(message, frame) {
     }
   }
   if (message.type === "system" && message.subtype === "init") {
-    version = message.claude_code_version;
+    if (
+      observerState === "negotiating" &&
+      (typeof message.session_id !== "string" || !message.session_id)
+    ) {
+      protocolSupported = false;
+      await fallbackToPassthrough();
+      return;
+    }
+    version = typeof message.claude_code_version === "string" ? message.claude_code_version : null;
     if (sessionId && sessionId !== message.session_id)
       throw new Error("Claude session identity changed");
     sessionId = message.session_id;
+    if (observerState === "negotiating") {
+      observerInitialized = true;
+      negotiationOutputs.push({ message, frame });
+      await completeObserverNegotiation();
+      return;
+    }
   }
-  if (message.type === "system" && message.subtype === "session_state_changed")
+  if (message.type === "system" && message.subtype === "session_state_changed") {
     nativeState = message.state;
+  }
   if (message.type === "system" && message.subtype === "background_tasks_changed") {
     if (!Array.isArray(message.tasks)) protocolSupported = false;
     else {
@@ -184,11 +268,20 @@ async function receive(message, frame) {
       if (safety) safety = { ...safety, backgroundTasks };
     }
   }
-  if (message.type === "active_goal") activeGoal = message.value != null;
-  if (message.type === "result") activeUsers = Math.max(0, activeUsers - 1);
+  if (message.type === "active_goal") {
+    goalState = !Object.hasOwn(message, "value")
+      ? "unknown"
+      : message.value === null
+        ? "complete"
+        : "unfinished";
+  }
+  if (message.type === "result") {
+    activeUsers = Math.max(0, activeUsers - 1);
+  }
   await (frame ? writeProtocolBytes(process.stdout, frame) : output(message));
 }
 async function launch(resume = false) {
+  const incarnation = session.control({ op: "replace" });
   let args = [...originalArgs];
   if (resume) {
     const filtered = [];
@@ -237,10 +330,18 @@ async function launch(resume = false) {
   spawns++;
   nativeState = "unknown";
   safety = null;
+  goalState = "unknown";
   void pumpJsonLines(current.stdout, (message, frame) => {
     reclaimer.note(frame);
-    return receive(message, frame);
-  }).catch(() => shutdown(1));
+    const exchange = session.exchange("provider", { incarnation, message });
+    if (!exchange.accepted) return;
+    return receive(message, frame).finally(exchange.settle);
+  }).catch(() => {
+    if (child === current && observerState === "negotiating")
+      return fallbackToPassthrough().catch(() => shutdown(1));
+    if (child !== current || phase === "restarting") return;
+    return shutdown(1);
+  });
   current.stderr.pipe(process.stderr, { end: false });
   current.stdin.on("error", () => {});
   current.on("error", () => {
@@ -249,7 +350,12 @@ async function launch(resume = false) {
   current.on("exit", () => {
     for (const pending of internal.values()) pending.reject(new Error("Claude exited"));
     internal.clear();
-    if (child === current && phase !== "stopping" && !quitting) void shutdown(1);
+    if (child !== current || quitting) return;
+    if (observerState === "negotiating" && phase === "running") {
+      void fallbackToPassthrough().catch(() => shutdown(1));
+      return;
+    }
+    if (!["stopping", "restarting"].includes(phase)) void shutdown(1);
   });
   await once(current, "spawn");
 }
@@ -295,15 +401,35 @@ async function stopNative() {
   }
   if (child === current) child = null;
 }
+async function fallbackToPassthrough(originalInitialization = initializerMessage) {
+  if (observerState !== "negotiating") return fallbackInitialization;
+  if (!originalInitialization) throw new Error("Claude initialization is unavailable");
+  observerState = "passthrough";
+  hooksDisabled = true;
+  negotiationOutputs = [];
+  phase = "restarting";
+  // Invalidate the old child before awaiting its exit. Any late output from it
+  // must not complete negotiation or mutate evidence for the replacement.
+  session.control({ op: "replace" });
+  fallbackInitialization = (async () => {
+    await stopNative();
+    sessionId = null;
+    backgroundTasks = 0;
+    await launch();
+    phase = "running";
+    await write(originalInitialization);
+  })();
+  return fallbackInitialization;
+}
 async function snapshot() {
   const memory = await sampleMemory(child?.pid);
   // A reservation does not release anything. Its eventual release still needs
   // this turn's complete safety snapshot and all guards in release().
   const scheduleSupported =
     !hooksDisabled &&
+    observerState === "controlled" &&
     protocolSupported &&
-    trackingComplete() &&
-    claudeVersions.includes(version);
+    trackingComplete();
   return {
     ...memory,
     controlVersion: 1,
@@ -315,7 +441,7 @@ async function snapshot() {
     nativePid: child?.pid ?? null,
     spawns,
     activeTurns: activeUsers,
-    unfinishedGoals: activeGoal ? 1 : 0,
+    unfinishedGoals: goalState === "unfinished" ? 1 : 0,
     pendingRequests: forwarded.size,
     pendingServerRequests: serverRequests.size,
     backgroundTasks,
@@ -323,18 +449,19 @@ async function snapshot() {
     sessionCrons: safety?.crons ?? null,
     nativeState,
     sessionId,
+    providerVersion: version,
     cacheBytes: reads.stats().bytes,
     cacheByteLimit: reads.stats().maxBytes,
     scheduleSupported,
-    releaseSupported: scheduleSupported && safety !== null,
+    releaseSupported: scheduleSupported && safety !== null && goalState !== "unknown",
     unavailableReason: hooksDisabled
-      ? launchValidated
-        ? "Claude SDK hooks are disabled for this invocation."
-        : "This Claude launch command or CLI version has not been validated for process control."
+      ? observerState === "passthrough"
+        ? "Claude process-control hook negotiation was unavailable."
+        : "Claude SDK hooks are disabled for this invocation."
       : !trackingComplete()
       ? "Protocol tracking capacity was exceeded. The process was left running."
-      : !protocolSupported || (version && !claudeVersions.includes(version))
-      ? "This Claude version or operation has not been validated for process control."
+      : !protocolSupported
+      ? "This Claude operation could not be validated for process control."
       : scheduleSupported
       ? "Waiting for a safe stopping point. You can schedule a stop."
       : "Claude process control is waiting for initialization.",
@@ -344,10 +471,16 @@ async function release(expectedGeneration) {
   if (phase === "released") return { status: "absent" };
   if (expectedGeneration !== generation) return { status: "generation-changed" };
   if (hooksDisabled)
-    return { status: "unsupported", reason: "Claude SDK hooks are disabled for this invocation." };
+    return {
+      status: "unsupported",
+      reason:
+        observerState === "passthrough"
+          ? "Claude process-control hook negotiation was unavailable."
+          : "Claude SDK hooks are disabled for this invocation.",
+    };
   if (phase !== "running" || !initializer || !sessionId)
     return { status: "busy", reason: "Not initialized" };
-  if (!protocolSupported || !claudeVersions.includes(version))
+  if (!protocolSupported || observerState !== "controlled")
     return { status: "unsupported", reason: "Claude protocol is not validated" };
   if (!trackingComplete())
     return {
@@ -355,45 +488,40 @@ async function release(expectedGeneration) {
       reason: "Protocol tracking capacity was exceeded. The process was left running.",
     };
   if (!safety) return { status: "busy", reason: "Waiting for a complete Claude safety snapshot" };
-  if (
-    nativeState !== "idle" ||
-    activeUsers ||
-    admissions ||
-    forwarded.size ||
-    serverRequests.size ||
-    activeGoal ||
-    backgroundTasks ||
-    safety.backgroundTasks ||
-    safety.crons
-  )
-    return { status: "busy", reason: "Claude work, permissions, or scheduled activity is pending" };
-  if (
-    typeof safety.transcript !== "string" ||
-    !(await stat(safety.transcript).catch(() => null))?.size
-  )
-    return { status: "busy", reason: "Claude history is not saved" };
-  // stat yielded: recheck host admissions and native activity before stopping.
-  if (!trackingComplete())
-    return {
-      status: "unsupported",
-      reason:
-        "Protocol tracking capacity was exceeded during inspection. The process was left running.",
-    };
-  if (
-    !safety ||
-    safety.backgroundTasks ||
-    safety.crons ||
-    hooksDisabled ||
-    !protocolSupported ||
-    nativeState !== "idle" ||
-    activeUsers ||
-    admissions ||
-    forwarded.size ||
-    serverRequests.size ||
-    activeGoal ||
-    backgroundTasks
-  )
-    return { status: "busy", reason: "New work arrived" };
+  if (goalState === "unknown")
+    return { status: "busy", reason: "Waiting for explicit Claude goal state" };
+  const checkpoint = session.control({ op: "checkpoint" });
+  const inspectedSafety = safety;
+  const historySaved =
+    typeof inspectedSafety.transcript === "string" &&
+    !!(await stat(inspectedSafety.transcript).catch(() => null))?.size;
+  const verdict = session.control({
+    op: "release",
+    checkpoint,
+    evidence: {
+      protocolSupported: protocolSupported && !hooksDisabled && observerState === "controlled",
+      trackingComplete: trackingComplete(),
+      inventoryComplete: true,
+      pendingWork: activeUsers + forwarded.size + serverRequests.size,
+      subjects: [
+        {
+          execution:
+            nativeState === "idle"
+              ? "settled"
+              : nativeState === "unknown"
+                ? "unknown"
+                : "active",
+          goal: goalState,
+          background:
+            backgroundTasks || inspectedSafety.backgroundTasks ? "present" : "none",
+          scheduled: inspectedSafety.crons ? "present" : "none",
+        },
+      ],
+      resumeDurable: historySaved,
+      stable: safety === inspectedSafety,
+    },
+  });
+  if (verdict.status !== "safe") return verdict;
   phase = "stopping";
   await stopNative();
   phase = "released";
@@ -409,10 +537,15 @@ async function wake() {
   phase = "running";
 }
 async function incoming(message, frame) {
+  const initializing =
+    message.type === "control_request" && message.request?.subtype === "initialize";
+  if (!initializing) await initializationGate;
+  // Stop-hook output is a point-in-time proof. Any client frame that can
+  // mutate or resume native work must earn a new proof before release.
+  if (!isPassiveClientFrame(message)) safety = null;
   if (message.type === "user") {
     if (phase === "released") await wake();
     activeUsers++;
-    safety = null;
   }
   if (message.type === "control_request") {
     const value = message.request;
@@ -433,11 +566,23 @@ async function incoming(message, frame) {
       return;
     }
     if (value?.subtype === "initialize") {
-      if (Buffer.byteLength(JSON.stringify(value)) <= 64 * 1024)
+      if (Buffer.byteLength(JSON.stringify(value)) <= 64 * 1024) {
         initializer = structuredClone(value);
-      else protocolSupported = false;
-      message = { ...message, request: attachHook(value) };
-      frame = undefined;
+        initializerMessage = structuredClone(message);
+      } else {
+        protocolSupported = false;
+        observerInitializeId = message.request_id;
+        forwarded.set(message.request_id, value);
+        beginInitialization();
+        await fallbackToPassthrough(message);
+        return;
+      }
+      if (initializer && !hooksDisabled && observerState === "negotiating") {
+        beginInitialization();
+        observerInitializeId = message.request_id;
+        message = { ...message, request: attachHook(value) };
+        frame = undefined;
+      }
     }
     forwarded.set(message.request_id, value);
   }
@@ -477,10 +622,9 @@ await launch();
 phase = "running";
 void pumpJsonLines(process.stdin, async (message, frame) => {
   reclaimer.note(frame);
-  const user = message.type === "user";
-  if (user) admissions++;
+  const admission = session.exchange("client", message);
   await enqueue(async () => {
-    if (user) admissions--;
+    admission.settle();
     try {
       await incoming(message, frame);
     } catch {

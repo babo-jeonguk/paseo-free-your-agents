@@ -6,7 +6,7 @@ Checkbox selection adds bulk process controls: schedule or update stops, cancel 
 
 ## Setup
 
-Process control runs on Linux and Windows daemon hosts with Paseo v0.11 or later. On macOS the screen loads, but process controls are unavailable. It is validated with Codex v0.162.1 and v0.163.0, and Claude v2.1.299 and v2.1.301. With other versions, conversations work normally but process control stays off. On Windows, Claude needs Node.js on PATH.
+Process control runs on Linux and Windows daemon hosts with Paseo v0.11 or later. On macOS the screen loads, but process controls are unavailable. Compatibility is established from the live Codex or Claude protocol contract rather than an exact CLI version list; missing or unknown evidence keeps the process running. On Windows, Claude needs Node.js on PATH.
 
 When the plugin first runs, it turns on process control for Codex and Claude by changing each provider's launch command to a small bridge. New conversations use it right away. After installing, or when an update changes the bridge, restart the Paseo daemon so that conversations that were already open use it too; the plugin never restarts the daemon itself. Interface-only updates leave existing bridges in place. To leave a provider unchanged, turn it off in Settings → Plugins → free-your-agents → Settings. Turning a provider off restores its original launch command, so do this before uninstalling.
 
