@@ -407,7 +407,7 @@ test(
 );
 
 test(
-  "Claude reservations remain available while release waits for a safety snapshot",
+  "Claude reservations remain available while release waits for a completed turn",
   supported,
   async (t) => {
     const { adapter, peer } = await setup(t);

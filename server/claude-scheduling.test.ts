@@ -11,9 +11,10 @@ import { createFileStore } from "./store";
 import { createProxyRuntime } from "./proxy-runtime";
 
 // Deterministic protocol peer, not native Claude evidence. The actual bridge,
-// ownership adapter, scheduler, safety hook, and local transport are exercised.
+// ownership adapter, scheduler, Stop hook inventory, and local transport are exercised.
 const peer = `
 import { createInterface } from 'node:readline';
+import { spawn } from 'node:child_process';
 import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
 const [root, version, observerMode] = process.argv.slice(2);
 const emit = value => process.stdout.write(JSON.stringify(value) + '\\n');
@@ -25,6 +26,11 @@ createInterface({ input: process.stdin }).on('line', line => {
     if (message.request.subtype === 'set_model') {
       emit({ type: 'control_response', response: { subtype: 'success', request_id: message.request_id, response: {} } });
       writeFileSync(root + '/setting-processed', 'yes');
+      return;
+    }
+    if (message.request.subtype === 'cancel_async_message') {
+      writeFileSync(root + '/native-cancel', 'yes');
+      emit({ type: 'control_response', response: { subtype: 'success', request_id: message.request_id, response: { cancelled: false } } });
       return;
     }
     // Like native Claude, an interrupted turn ends without a Stop hook.
@@ -65,13 +71,36 @@ createInterface({ input: process.stdin }).on('line', line => {
 }).on('close', () => {
   // Native Claude treats end of input as a graceful shutdown: it finishes work it
   // started itself, here a notification turn longer than any kill deadline.
-  if (observerMode !== 'drain-turn') process.exit(0);
+  if (!observerMode.startsWith('drain-')) process.exit(0);
   emit({ type: 'system', subtype: 'session_state_changed', state: 'running' });
-  emit({ type: 'control_request', request_id: 'drain-permission', request: { subtype: 'can_use_tool', tool_name: 'Bash', input: {} } });
+  if (observerMode === 'drain-turn') {
+    emit({ type: 'control_request', request_id: 'drain-permission', request: { subtype: 'can_use_tool', tool_name: 'Bash', input: {} } });
+    // Native withdraws a request of its own; a late answer to it has no taker.
+    emit({ type: 'control_request', request_id: 'self-cancelled', request: { subtype: 'can_use_tool', tool_name: 'Bash', input: {} } });
+    emit({ type: 'control_cancel_request', request_id: 'self-cancelled' });
+  }
+  // Output the bridge cannot read, then more than a pipe holds: a pipe nobody
+  // reads would block this process forever.
+  if (observerMode === 'drain-malformed') {
+    process.stdout.write('not-json\\n');
+    for (let line = 0; line < 512; line++) emit({ type: 'stream_event', padding: 'x'.repeat(1024) });
+  }
+  // Like native Claude, SIGINT ends the turn being finished; with input closed it then exits.
+  process.on('SIGINT', () => {
+    writeFileSync(root + '/sigint', 'yes');
+    emit({ type: 'result', subtype: 'error_during_execution', session_id: 'fixture-session' });
+    emit({ type: 'system', subtype: 'session_state_changed', state: 'idle' });
+    process.exit(0);
+  });
   setTimeout(() => {
     writeFileSync(root + '/drained', 'yes');
     emit({ type: 'result', subtype: 'success', session_id: 'fixture-session' });
     emit({ type: 'system', subtype: 'session_state_changed', state: 'idle' });
+    // A helper sharing stdout writes after native has exited: exit alone does not
+    // mean all of native's output has arrived. Windows does not share the pipe
+    // with such a helper, so there output cannot outlive the exit.
+    if (observerMode === 'drain-turn' && process.platform !== 'win32')
+      spawn(process.execPath, ['-e', 'setTimeout(() => process.stdout.write(' + JSON.stringify(JSON.stringify({ type: 'control_request', request_id: 'late-permission', request: { subtype: 'can_use_tool', tool_name: 'Bash', input: {} } }) + '\\n') + '), 300)'], { stdio: ['ignore', 'inherit', 'inherit'] });
     process.exit(0);
   }, 3000);
 });
@@ -128,14 +157,18 @@ test("Claude bridge accepts reservations during its first turn and protects fore
     ["2.1.301", false, "setting-after-turn"],
     ["2.1.301", false, "interrupt-after-turn"],
     ["2.1.301", false, "drain-turn"],
+    ["2.1.301", false, "drain-interrupt"],
+    ["2.1.301", false, "drain-withdraw"],
+    ["2.1.301", false, "drain-flood"],
     ["2.1.301", false, "cleared-goal"],
     ["2.1.301", false, "unfinished-goal"],
     ["2.1.301", false, "malformed-goal"],
     ["2.1.301", false, "missing-session"],
     ["2.1.301", false, "slow-wake"],
+    ["2.1.301", false, "drain-malformed"],
   ] as const) {
     await Promise.all(
-      ["started", "finish", "background-done", "transcript", "setting-processed", "spawns", "drained"].map((name) =>
+      ["started", "finish", "background-done", "transcript", "setting-processed", "spawns", "drained", "sigint", "native-cancel"].map((name) =>
         rm(join(root, name), { force: true }),
       ),
     );
@@ -177,6 +210,8 @@ test("Claude bridge accepts reservations during its first turn and protects fore
       },
     );
     const [runtime] = await waitFor(() => adapter.api.snapshot({ agentIds: ["a"] }), ([value]) => value?.activity === "working");
+    // A mode whose bridge exited leaves its stop unconfirmed; this new process makes it obsolete.
+    await control.tick();
     const input = { agentId: "a", expectedGeneration: runtime!.generation, expectedStopId: null, action: "schedule" as const, hours: 0.25 };
     if (disabled || ["oversized-initialize", "missing-session"].includes(observerMode)) {
       // Initialization is forwarded exactly once and native is never replaced.
@@ -257,9 +292,10 @@ test("Claude bridge accepts reservations during its first turn and protects fore
     }
     if (observerMode === "drain-turn") {
       // The drain's permission request is answered only after native has exited.
-      const answered = waitFor(async () => stdout, (value) => value.includes("drain-permission")).then(() =>
-        bridge.stdin.write(JSON.stringify({ type: "control_response", response: { subtype: "success", request_id: "drain-permission", response: {} } }) + "\n"),
-      );
+      const answered = waitFor(async () => stdout, (value) => value.includes("self-cancelled")).then(() => {
+        for (const id of ["drain-permission", "self-cancelled"])
+          bridge.stdin.write(JSON.stringify({ type: "control_response", response: { subtype: "success", request_id: id, response: {} } }) + "\n");
+      });
       for (let round = 0; round < 50 && (await control.list()).rows[0]!.stop; round++) {
         await control.tick();
         await new Promise((resolve) => setTimeout(resolve, 100));
@@ -267,6 +303,49 @@ test("Claude bridge accepts reservations during its first turn and protects fore
       await answered;
       assert.equal(await readFile(join(root, "drained"), "utf8"), "yes", "Native finished its own work");
       await waitFor(async () => stdout, (value) => value.includes('"control_cancel_request","request_id":"drain-permission"'));
+      if (process.platform !== "win32")
+        await waitFor(async () => stdout, (value) => value.includes('"control_cancel_request","request_id":"late-permission"'));
+    } else if (observerMode.startsWith("drain-")) {
+      await control.tick();
+      assert.equal((await control.list()).rows[0]!.stop?.state, "stopping", "Native is finishing its own turn");
+      if (observerMode === "drain-malformed") {
+        // A stream the bridge cannot read ends it, draining or not; it never stalls native.
+        await waitFor(async () => bridge.exitCode ?? bridge.signalCode, (value) => value !== null);
+        assert.notEqual(bridge.exitCode, 0, stderr);
+        continue;
+      }
+      // Input during a drain waits for the resumed session, which answers it
+      // itself. The user's stop gesture (a withdrawal or an interrupt), or more
+      // input than the queue holds, ends the turn native is finishing.
+      await rm(join(root, "started"));
+      const uuid = "33333333-3333-4333-8333-333333333333";
+      if (observerMode === "drain-flood") {
+        for (let frame = 0; frame < 300; frame++)
+          bridge.stdin.write(JSON.stringify({ type: "control_request", request_id: "flood-" + frame, request: { subtype: "set_model", model: "fixture" } }) + "\n");
+        bridge.stdin.write(JSON.stringify({ type: "user", uuid, message: { role: "user", content: "after flood" } }) + "\n");
+      } else {
+        bridge.stdin.write(JSON.stringify({ type: "user", uuid, message: { role: "user", content: "during drain" } }) + "\n");
+        bridge.stdin.write(JSON.stringify(observerMode === "drain-withdraw"
+          ? { type: "control_request", request_id: "stop", request: { subtype: "cancel_async_message", message_uuid: uuid } }
+          : { type: "control_request", request_id: "stop", request: { subtype: "interrupt" } }) + "\n");
+      }
+      await waitFor(() => readFile(join(root, "started"), "utf8").catch(() => ""), Boolean);
+      assert.equal(await readFile(join(root, "drained"), "utf8").catch(() => "cut short"), "cut short", "The stop ended native's turn early");
+      if (process.platform !== "win32")
+        assert.equal(await readFile(join(root, "sigint"), "utf8"), "yes", "SIGINT ended the turn");
+      assert.equal((await readFile(join(root, "spawns"), "utf8")).trim().split("\n").length, 2);
+      if (observerMode !== "drain-flood") {
+        await waitFor(async () => stdout, (value) => value.includes('"request_id":"stop"'));
+        if (observerMode === "drain-withdraw")
+          assert.equal(await readFile(join(root, "native-cancel"), "utf8"), "yes", "The resumed native answered the withdrawal");
+      }
+      // The scheduler settles the stop against the resumed process.
+      for (let round = 0; round < 20 && (await control.list()).rows[0]!.stop; round++) await control.tick();
+      assert.equal((await control.list()).rows[0]!.stop, null);
+      bridge.stdin.end();
+      await exited;
+      assert.equal(bridge.exitCode, 0, stderr);
+      continue;
     } else await control.tick();
     const stopped = (await control.list()).rows[0]!;
     assert.equal(stopped.runtime.presence, "absent", JSON.stringify(stopped));
@@ -274,11 +353,17 @@ test("Claude bridge accepts reservations during its first turn and protects fore
     assert.equal(stopped.stopped, true);
     if (observerMode === "slow-wake" || observerMode === "setting-after-turn") {
       await rm(join(root, "started"), { force: true });
+      // The resumed turn is interrupted before any Stop hook can run.
+      await rm(join(root, "finish"), { force: true });
       bridge.stdin.write(JSON.stringify({ type: "user", message: { role: "user", content: "resume" } }) + "\n");
       await waitFor(() => readFile(join(root, "started"), "utf8").catch(() => ""), Boolean);
       assert.equal((await adapter.api.snapshot({ agentIds: ["a"] }))[0]!.presence, "running", stderr);
       if (observerMode === "setting-after-turn")
         assert.equal(await readFile(join(root, "setting-processed"), "utf8"), "yes", "Resume replays the setting");
+      // Scheduled wakeups belong to the session: an interrupted first turn after
+      // resuming still has the inventory the release was decided on.
+      bridge.stdin.write(JSON.stringify({ type: "control_request", request_id: "resume-interrupt", request: { subtype: "interrupt" } }) + "\n");
+      await waitFor(() => adapter.api.snapshot({ agentIds: ["a"] }), ([value]) => value?.releasable === true && value.activity === "idle");
     }
     bridge.stdin.end();
     await exited;

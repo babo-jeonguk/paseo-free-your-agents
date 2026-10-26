@@ -34,6 +34,8 @@ const startupTimeoutMs =
   configuredStartupTimeout > 0
     ? configuredStartupTimeout
     : 30_000;
+// How long a release waits for native to exit before reporting "stopping".
+const drainReplyMs = 1_000;
 if (process.env.RUNTIME_PROXY_RECIPE_FILE)
   Object.assign(
     process.env,
@@ -72,10 +74,19 @@ let initializeSeen = false,
   sessionId = null,
   version = null,
   nativeState = "unknown",
+  // Scheduled wakeups belong to the session, not the process: a resume restores
+  // them, so the inventory a release relied on still holds after waking.
   inventory = null,
-  draining = null;
+  draining = null,
+  nativeOutput = null;
 // Native requests abandoned by an exited process; late client answers are moot.
 const abandoned = new Set();
+// Client frames admitted but not yet processed. While native drains they wait
+// for the resumed session, bounded like the stdin pump's own reading.
+let waitingFrames = 0,
+  waitingBytes = 0,
+  drainInterrupted = false;
+const inputBacklogged = () => waitingFrames > 256 || waitingBytes > 256 * 1024;
 let activeUsers = 0,
   goalState = "complete",
   backgroundTasks = 0,
@@ -118,8 +129,7 @@ async function receive(message, frame) {
     const request = message.request;
     if (request?.subtype === "hook_callback" && request.callback_id === hookId) {
       const input = request.input;
-      // The last completed turn's scheduled wakeups. They survive a stop (resume
-      // restores them) but would not fire while released.
+      // The last completed turn's scheduled wakeups, which would not fire while released.
       inventory =
         input?.hook_event_name === "Stop" && Array.isArray(input.session_crons)
           ? { crons: input.session_crons.length, transcript: input.transcript_path }
@@ -254,18 +264,19 @@ async function launch(resume = false) {
   // The background level is per process and is not re-sent at startup.
   nativeState = "unknown";
   backgroundTasks = 0;
-  inventory = null;
   // A pursued goal keeps native running instead of idle, and a deferred one
   // waits on background work, so only an explicit report can mark it unfinished.
   goalState = "complete";
-  void pumpJsonLines(current.stdout, (message, frame) => {
+  nativeOutput = pumpJsonLines(current.stdout, (message, frame) => {
     reclaimer.note(frame);
     const exchange = session.exchange("provider", { incarnation, message });
     if (!exchange.accepted) return;
     if (changesEvidence(message)) exchange.invalidate();
     return receive(message, frame).finally(exchange.settle);
   }).catch(() => {
-    if (child !== current || phase === "stopping") return;
+    // Native output must always be consumed: a stream the bridge cannot read
+    // ends it, draining or not, rather than leaving native blocked on a pipe.
+    if (child !== current) return;
     return shutdown(1);
   });
   current.stderr.pipe(process.stderr, { end: false });
@@ -327,29 +338,60 @@ async function stopNative() {
 }
 // Ending input is Claude's graceful shutdown: native finishes background work and
 // turns it started itself (a task notification racing this release included),
-// fails permission prompts it can no longer ask, and exits. Its own exit is the
-// only completion; a drain is never cut short by a signal.
+// fails permission prompts it can no longer ask, and exits. It completes once
+// native has exited and all of its output has been read (stdio can outlive the
+// exit); the bridge signals native only when the user interrupts.
 function drain(id, expectedGeneration) {
   const current = child;
-  const exited = once(current, "exit");
+  const finished = Promise.all([once(current, "exit"), nativeOutput]);
   current.stdin.end();
-  draining = {
-    id,
-    done: exited.then(async () => {
-      if (child === current) child = null;
-      // Requests native abandoned at exit no longer need the client's answer.
-      for (const requestId of serverRequests.ids()) {
-        abandoned.add(requestId);
-        serverRequests.delete(requestId);
+  drainInterrupted = false;
+  draining = finished.then(async () => {
+    // A bridge that is failing confirms nothing.
+    if (quitting) return;
+    if (child === current) child = null;
+    phase = "released";
+    rememberOutcome(id, expectedGeneration, { status: "released" });
+    reclaimer.released(() => phase === "released");
+    // Requests native abandoned at exit no longer need the client's answer.
+    const ids = serverRequests.ids();
+    for (const requestId of ids) {
+      abandoned.add(requestId);
+      serverRequests.delete(requestId);
+    }
+    try {
+      for (const requestId of ids)
         await output({ type: "control_cancel_request", request_id: requestId });
-      }
-      phase = "released";
-      outcomes.set(id, { generation: expectedGeneration, result: { status: "released" } });
+    } finally {
       draining = null;
-      reclaimer.released(() => phase === "released");
-    }),
-  };
-  return draining.done;
+    }
+  });
+  return draining;
+}
+// The user's stop gesture: Paseo withdraws unstarted messages, then interrupts.
+const stopsWork = (message) =>
+  message.type === "control_request" &&
+  ["interrupt", "cancel_async_message"].includes(message.request?.subtype);
+// Ends the turn a draining native is finishing. SIGINT is native's documented way
+// to end a turn without input, sent to its process group like a terminal Ctrl-C;
+// Windows has no SIGINT for another process, so there it is a forced exit. The
+// input that asked for it is then answered by the resumed native itself.
+function interruptDrain() {
+  if (!child || drainInterrupted) return;
+  drainInterrupted = true;
+  signalNative(child, "SIGINT");
+}
+// Results stay answerable after the queue moves on. Even after eviction,
+// generation matching prevents an old operation from stopping a new process.
+function rememberOutcome(id, expectedGeneration, result) {
+  outcomes.set(id, { generation: expectedGeneration, result });
+  if (outcomes.size > 128) outcomes.delete(outcomes.keys().next().value);
+}
+function settledOutcome(id, expectedGeneration) {
+  const previous = outcomes.get(id);
+  if (previous && previous.generation !== expectedGeneration)
+    throw new Error("Control request reused for another generation");
+  return previous?.result;
 }
 const changesEvidence = (message) =>
   message.type === "result" ||
@@ -357,23 +399,35 @@ const changesEvidence = (message) =>
   message.type === "control_request" ||
   (message.type === "system" &&
     ["init", "session_state_changed", "background_tasks_changed"].includes(message.subtype));
+// Why this conversation cannot be stopped now (permanently, or until it has
+// initialized), or null when the remaining checks are per release.
 const unavailable = () =>
-  hooksDisabled
-    ? "Claude SDK hooks are disabled for this invocation."
-    : !initializeSeen
-      ? "Claude process control is waiting for initialization."
+  !initializeSeen
+    ? { status: "busy", reason: "Claude process control is waiting for initialization." }
+    : hooksDisabled
+      ? { status: "unsupported", reason: "Claude SDK hooks are disabled for this invocation." }
       : !initializer
-        ? "This conversation's setup is too large to restore after a stop."
+        ? {
+            status: "unsupported",
+            reason: "This conversation's setup is too large to restore after a stop.",
+          }
         : !trackingComplete()
-          ? "Protocol tracking capacity was exceeded. The process was left running."
+          ? {
+              status: "unsupported",
+              reason: "Protocol tracking capacity was exceeded. The process was left running.",
+            }
           : !protocolSupported
-            ? "This Claude operation could not be validated for process control."
+            ? {
+                status: "unsupported",
+                reason: "This Claude operation could not be validated for process control.",
+              }
             : null;
 async function snapshot() {
   const memory = await sampleMemory(child?.pid);
   // A reservation does not release anything. Its eventual release still needs
   // a completed turn's inventory and all guards in release().
-  const scheduleSupported = unavailable() === null;
+  const blocked = unavailable();
+  const scheduleSupported = blocked === null;
   return {
     ...memory,
     controlVersion: 1,
@@ -398,15 +452,15 @@ async function snapshot() {
     scheduleSupported,
     releaseSupported: scheduleSupported && inventory !== null && goalState !== "unknown",
     unavailableReason:
-      unavailable() ?? "Waiting for a safe stopping point. You can schedule a stop.",
+      blocked?.reason ?? "Waiting for a safe stopping point. You can schedule a stop.",
   };
 }
 async function release(id, expectedGeneration) {
   if (phase === "released") return { status: "absent" };
   if (expectedGeneration !== generation) return { status: "generation-changed" };
   if (phase === "stopping") return { status: "stopping" };
-  const reason = unavailable();
-  if (reason) return { status: initializeSeen ? "unsupported" : "busy", reason };
+  const blocked = unavailable();
+  if (blocked) return blocked;
   if (phase !== "running" || !sessionId) return { status: "busy", reason: "Not initialized" };
   if (!inventory) return { status: "busy", reason: "Waiting for Claude to finish a turn" };
   if (goalState === "unknown")
@@ -449,8 +503,8 @@ async function release(id, expectedGeneration) {
   // Usually native exits at once. A longer drain reports "stopping"; the
   // scheduler confirms with the same ID until native has exited.
   const exited = await Promise.race([
-    done.then(() => true),
-    new Promise((resolve) => setTimeout(resolve, 1000, false)),
+    done.then(() => phase === "released"),
+    new Promise((resolve) => setTimeout(resolve, drainReplyMs, false)),
   ]);
   return { status: exited ? "released" : "stopping" };
 }
@@ -464,7 +518,7 @@ async function wake() {
 }
 async function incoming(message, frame) {
   // Input arriving during a drain is delivered to the resumed session.
-  if (draining) await draining.done;
+  if (draining) await draining;
   if (message.type === "user") {
     if (phase === "released") await wake();
     activeUsers++;
@@ -504,8 +558,9 @@ async function incoming(message, frame) {
   }
   if (message.type === "control_response" || message.type === "control_cancel_request") {
     const id = message.response?.request_id ?? message.request_id;
-    if (abandoned.delete(id)) return;
     serverRequests.delete(id);
+    // An answer is for the process that asked; none is left to take it.
+    if (abandoned.delete(id) || !child) return;
   }
   await write(message, frame);
 }
@@ -520,32 +575,31 @@ async function shutdown(code = 0) {
 closeControl = await listenControl({
   path: process.env.RUNTIME_PROXY_SOCKET,
   token: process.env.RUNTIME_PROXY_TOKEN,
-  handle: (message) =>
-    message.op === "snapshot"
-      ? snapshot()
-      : // A drain holds the queue; confirming it must not wait behind it.
-        draining && message.expectedGeneration === generation
-        ? { status: "stopping" }
-        : enqueue(async () => {
-          const previous = outcomes.get(message.id);
-          if (previous) {
-            if (previous.generation !== message.expectedGeneration)
-              throw new Error("Control request reused for another generation");
-            return previous.result;
-          }
-          const result = await release(message.id, message.expectedGeneration);
-          if (!["busy", "unsupported", "stopping"].includes(result.status))
-            outcomes.set(message.id, { generation: message.expectedGeneration, result });
-          if (outcomes.size > 128) outcomes.delete(outcomes.keys().next().value);
-          return result;
-        }),
+  handle: (message) => {
+    if (message.op === "snapshot") return snapshot();
+    // Settled outcomes and an ongoing drain are answered at once: confirming a
+    // stop never waits behind the drain or a resume queued after it.
+    const previous = settledOutcome(message.id, message.expectedGeneration);
+    if (previous) return previous;
+    if (draining && message.expectedGeneration === generation) return { status: "stopping" };
+    return enqueue(async () => {
+      const settled = settledOutcome(message.id, message.expectedGeneration);
+      if (settled) return settled;
+      const outcome = await release(message.id, message.expectedGeneration);
+      if (!["busy", "unsupported", "stopping"].includes(outcome.status))
+        rememberOutcome(message.id, message.expectedGeneration, outcome);
+      return outcome;
+    });
+  },
 });
 await launch();
 phase = "running";
-void pumpJsonLines(process.stdin, async (message, frame) => {
-  reclaimer.note(frame);
-  const admission = session.exchange("client", message);
-  await enqueue(async () => {
+function admit(message, frame, admission) {
+  waitingFrames++;
+  waitingBytes += frame.length;
+  return enqueue(async () => {
+    waitingFrames--;
+    waitingBytes -= frame.length;
     admission.settle();
     try {
       await incoming(message, frame);
@@ -553,6 +607,17 @@ void pumpJsonLines(process.stdin, async (message, frame) => {
       await shutdown(1);
     }
   });
+}
+void pumpJsonLines(process.stdin, async (message, frame) => {
+  reclaimer.note(frame);
+  const admission = session.exchange("client", message);
+  const processed = admit(message, frame, admission);
+  if (!draining) return processed;
+  // Reading continues while native drains so a stop gesture is seen. More input
+  // than that bound means the session is in use: the drain ends and reading
+  // waits, as it normally does, for each frame.
+  if (stopsWork(message) || inputBacklogged()) interruptDrain();
+  if (inputBacklogged()) await processed;
 }).then(
   () => shutdown(),
   () => shutdown(1),
