@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.2.0 — 2026-10-27
+
+### Changed
+
+- Support Paseo 0.13 while continuing to support Paseo 0.11 and 0.12.
+- Decide whether Codex and Claude can be stopped from their live safety evidence instead of a fixed CLI version list. Compatible CLI updates can work without a plugin update; incomplete or unknown evidence keeps the process running.
+- Prevent disconnected or abandoned tab owners from authorizing stale process-control requests.
+
+### Fixed
+
+- Follow Claude's real lifecycle when stopping a process. Background and notification work can finish, the process remains interruptible while draining, and a new message resumes the same conversation.
+
+### Upgrade notes
+
+- Restart the Paseo daemon when no agent is working so existing conversations use the updated bridge. New conversations use it immediately.
+
 ## 1.1.1 — 2026-10-22
 
 ### Fixed
