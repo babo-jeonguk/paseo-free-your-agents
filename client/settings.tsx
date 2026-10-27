@@ -1,5 +1,6 @@
 import { useRpc, type PluginSurfaceProps } from "@getpaseo/plugin/client";
-import { ScrollView, SettingsAction, SettingsCard, SettingsRow, SettingsSection, SettingsSwitch } from "@getpaseo/plugin/client/ui";
+import { ScrollView } from "@getpaseo/plugin/client/react-native";
+import { SettingsAction, SettingsCard, SettingsRow, SettingsSection, SettingsSwitch } from "@getpaseo/plugin/client/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Text } from "react-native";
 import { managementChangeRpc, managementReadRpc, setupChangeRpc, setupStatusRpc } from "../shared/rpc";
