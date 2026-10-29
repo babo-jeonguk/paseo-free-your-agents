@@ -1,9 +1,9 @@
 {
   "id": "free-your-agents",
   "name": "Free Your Agents",
-  "description": "Reclaim memory from idle agents without losing the conversation. Stop idle processes now or schedule a stop after work finishes.",
+  "description": "Discontinued. Memory and process controls for Paseo 0.11–0.13. Paseo 0.14 adds built-in idle runtime cleanup.",
   "requirements": {
-    "paseo": ">=0.11.0"
+    "paseo": ">=0.11.0 <0.14.0-0"
   },
   "media": [
     "assets/free-your-agents.png",
