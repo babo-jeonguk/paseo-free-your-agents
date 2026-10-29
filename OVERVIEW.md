@@ -1,6 +1,6 @@
 **Development has ended. Supports Paseo 0.11–0.13 only. Paseo 0.14 and later, including 0.14 prereleases, are unsupported; no further updates are planned.**
 
-Paseo 0.14 introduces built-in idle runtime cleanup, releasing eligible runtimes after one idle hour and resuming the saved session on the next message. This covers the plugin's original memory-reclamation goal. Manual stops, custom schedules and the memory display remain plugin-specific features. See the [official release notes](https://github.com/getpaseo/paseo/releases/tag/v0.14.0-beta.2#improved).
+Paseo 0.14 introduces built-in idle runtime cleanup, releasing eligible runtimes after one idle hour and resuming the saved session on the next message. This covers the plugin's original memory-reclamation goal. Manual stops, custom schedules and the memory display remain plugin-specific features. See the [official release notes](https://github.com/getpaseo/paseo/releases/tag/v0.14.0#improved).
 
 Before upgrading to Paseo 0.14, turn off Codex and Claude in the plugin's Settings to restore their launch commands, uninstall the plugin, and restart the daemon when no agents are working. Complete this on Paseo 0.11–0.13, while the plugin's settings are accessible. On 0.14, built-in cleanup is enabled by default under Settings → your host → Agents → Release idle agents.
 

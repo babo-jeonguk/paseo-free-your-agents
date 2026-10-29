@@ -2,7 +2,7 @@
 
 **Development has ended. Free Your Agents supports Paseo 0.11–0.13 only; Paseo 0.14 and later are unsupported. No further updates are planned.**
 
-Paseo 0.14 introduces built-in idle runtime cleanup: eligible agent runtimes are released after one idle hour, and the next message resumes the saved session. This covers the plugin's original goal of reclaiming memory from idle agents, so development is ending. The built-in feature does not replace every plugin control, such as manual stops, custom schedules or the memory display. See the [official release notes](https://github.com/getpaseo/paseo/releases/tag/v0.14.0-beta.2#improved).
+Paseo 0.14 introduces built-in idle runtime cleanup: eligible agent runtimes are released after one idle hour, and the next message resumes the saved session. This covers the plugin's original goal of reclaiming memory from idle agents, so development is ending. The built-in feature does not replace every plugin control, such as manual stops, custom schedules or the memory display. See the [official release notes](https://github.com/getpaseo/paseo/releases/tag/v0.14.0#improved).
 
 **Before upgrading to Paseo 0.14:** [turn off process control and uninstall the plugin](#turn-off-and-uninstall) while still on a supported Paseo version. The plugin's settings may be unavailable after upgrading.
 
