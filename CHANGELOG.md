@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.1 — 2026-10-29
+
+### Changed
+
+- End development following Paseo 0.14's introduction of built-in idle runtime cleanup. No further updates are planned.
+- Limit Paseo compatibility to `>=0.11.0 <0.14.0-0`, excluding 0.14 prereleases and later versions. Existing process-control features remain available on Paseo 0.11–0.13.
+- Document how to restore provider launch commands and uninstall before upgrading to Paseo 0.14. Built-in cleanup covers automatic idle release and saved-session resume; manual stops, custom schedules and memory reporting are not equivalent features.
+
 ## 1.2.0 — 2026-10-27
 
 ### Changed

@@ -1,5 +1,11 @@
 # Free Your Agents for Paseo
 
+**Development has ended. Free Your Agents supports Paseo 0.11–0.13 only; Paseo 0.14 and later are unsupported. No further updates are planned.**
+
+Paseo 0.14 introduces built-in idle runtime cleanup: eligible agent runtimes are released after one idle hour, and the next message resumes the saved session. This covers the plugin's original goal of reclaiming memory from idle agents, so development is ending. The built-in feature does not replace every plugin control, such as manual stops, custom schedules or the memory display. See the [official release notes](https://github.com/getpaseo/paseo/releases/tag/v0.14.0#improved).
+
+**Before upgrading to Paseo 0.14:** [turn off process control and uninstall the plugin](#turn-off-and-uninstall) while still on a supported Paseo version. The plugin's settings may be unavailable after upgrading.
+
 Free Your Agents shows how much memory your open Codex and Claude conversations use in Paseo, and stops idle agent processes now or at a time you choose. The conversation, its history and its tab stay open. Your next message starts the process again and resumes the same session.
 
 It helps when many conversations stay open: each one keeps its CLI process running even while idle, and those processes add up.
@@ -20,7 +26,7 @@ It helps when many conversations stay open: each one keeps its CLI process runni
 ## Requirements
 
 - **Daemon host:** Linux or Windows. On macOS the screen loads, but process controls are unavailable.
-- **Paseo:** v0.11 or later, with plugins enabled.
+- **Paseo:** v0.11–v0.13, with plugins enabled (`>=0.11.0 <0.14.0-0`). Paseo 0.14 prereleases and later versions are excluded.
 - **Agent CLIs:** process control is verified from the live protocol contract rather than an exact CLI version list. Unknown or incomplete protocol evidence leaves the process running.
 - **Windows:** Claude needs Node.js on `PATH`, because Paseo starts Claude without a shell.
 - **Apps:** tested in Paseo's web app. Native iOS and Android apps are not validated yet.
@@ -98,12 +104,19 @@ Paseo v0.11 has no public plugin API to release an idle provider process without
 
 ## Turn off and uninstall
 
+Complete these steps before upgrading to Paseo 0.14, while the plugin's settings are still accessible.
+
 1. Turn off **Codex** and **Claude** in the plugin's Settings. This restores their original launch commands. A provider that had no custom command gets an explicit `["codex"]` or `["claude"]`, because Paseo's configuration API cannot remove an override.
 2. Uninstall the plugin.
+3. Once no agents are working, restart the Paseo daemon so existing conversations also stop using the bridge. You can then upgrade Paseo.
 
 If you uninstall first, the launchers left in the plugin's `plugin-data` directory pass new sessions straight to the native CLI. Do not delete that directory while a provider command still points into it.
 
+On Paseo 0.14, built-in cleanup is enabled by default. Its switch is **Settings → your host → Agents → Release idle agents**.
+
 ## Development
+
+Development has ended. The commands below remain available for checking the existing source.
 
 ```sh
 npm ci
